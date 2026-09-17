@@ -1,9 +1,25 @@
+# Secrets / credentials
 .env
-data/
-config/companies.yaml
 config/credentials.json
 config/gmail_token.json
+
+# Personal data -- your job pipeline DB, calibration notes, and CVs
+data/
+config/companies.yaml
+config/calibration_notes.md
 config/cvs/*.md
 !config/cvs/README.md
+
+# Logs
+*.log
+run.log
+
+# Python
 __pycache__/
 *.pyc
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
