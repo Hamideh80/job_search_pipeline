@@ -3,6 +3,14 @@
 Run via `python main.py`. Safe to run repeatedly: dedup on JD hash means a
 re-run only processes what's new, and every stage only picks up jobs still
 sitting at the previous pipeline_status.
+
+The pipeline DB (db.py, SQLite) is the only source of truth for processing
+state -- Notion is a one-way dashboard (see notion_sync.py's docstring),
+never read from for discovery. Broad discovery beyond companies.yaml and
+LinkedIn Gmail intake is expected to come from seed_discoveries.py (a
+separate local entry point a Claude scheduled task's web search hands
+results to) rather than from anything in this module -- see its docstring
+and the README section on the scheduled-task architecture.
 """
 import json
 import os
@@ -44,7 +52,7 @@ def run_discovery(conn) -> int:
                 print(f"[discovery] {ats}/{token} failed: {exc}")
                 continue
             for posting in postings:
-                new_count += _insert_if_new(conn, posting)
+                new_count += insert_discovered_job(conn, posting)
 
     if watchlist.get("linkedin_gmail_label"):
         new_count += _run_linkedin_intake(conn, watchlist["linkedin_gmail_label"])
@@ -71,11 +79,15 @@ def _run_linkedin_intake(conn, label_name: str) -> int:
             "jd_raw": jd_text,
             "source": "LinkedIn",
         }
-        added += _insert_if_new(conn, posting)
+        added += insert_discovered_job(conn, posting)
     return added
 
 
-def _insert_if_new(conn, posting: dict) -> int:
+def insert_discovered_job(conn, posting: dict) -> int:
+    """Dedup-checked insert used by every discovery source (companies.yaml,
+    LinkedIn Gmail intake, and seed_discoveries.py for web-search results
+    handed off by a scheduled task). Returns 1 if it was new, 0 if this
+    exact company+title+JD text is already tracked."""
     jd_hash = db.hash_jd(posting["company"], posting["title"], posting["jd_raw"])
     if db.job_exists(conn, jd_hash):
         return 0
@@ -170,6 +182,11 @@ def run_tailoring(conn, cv_folder: Path, output_dir: Path) -> None:
 
 
 def run_notion_sync(conn) -> None:
+    """Creates a Notion dashboard row for every tailored job, then polls for
+    Status changes (see notion_sync.py -- this is one-way except that one
+    field). Every job's Notion page is always brand-new here: with
+    notion_intake removed, the pipeline is the only thing that ever creates
+    a Job Tracker 2026 row, so there's nothing to update-in-place."""
     for row in db.jobs_by_status(conn, "tailored"):
         page_id = notion_sync.create_job_page(dict(row))
         db.update_job(conn, row["id"], notion_page_id=page_id, pipeline_status="synced")

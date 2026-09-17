@@ -3,16 +3,27 @@
 Implements all six phases from the [build-plan doc](https://claude.ai/code/artifact/aa39646b-7ab7-45d5-b2f4-1ef9267de06c):
 data model + Notion sync, discovery + extraction, fit scoring (hard gate
 deferred, then reintroduced as a learned pattern in phase 6), resume
-tailoring + drafted answers, approval-gated auto-apply, and a weekly
-learning loop that recalibrates scoring from your own decisions.
+tailoring + drafted answers, approval-gated auto-apply, and a learning
+loop that recalibrates scoring from your own decisions.
 
-**What this does today:** pulls new postings from your Greenhouse/Ashby/Lever
-watchlist and LinkedIn job-alert emails, extracts structured requirements,
-scores each job 0–100 against your three CV categories, builds a tailored
-.docx/.pdf resume from the matching base CV, drafts evergreen application
-answers, and writes the result to your Notion Job Tracker 2026 database for
-you to review. Once you set a job's Notion Status to **Approved**, it will
-(for Greenhouse/Ashby/Lever only) fill out the real application form,
+**Architecture in one line:** SQLite (`pipeline/db.py`) is the only source
+of truth for processing state — dedup, job IDs, file paths, pipeline
+status, timestamps. Notion (Job Tracker 2026) is a one-way dashboard: the
+pipeline writes results there for you to see, and reads back exactly one
+field (Status) as the approval gate for auto-apply. Nothing about how the
+pipeline works internally lives in Notion, and nothing is ever discovered
+*from* Notion.
+
+**What this does today:** finds new postings (from your Greenhouse/Ashby/Lever
+watchlist, LinkedIn job-alert emails, and — the main channel — a Claude
+scheduled task's broad web search feeding in through `seed_discoveries.py`,
+see **Scheduled-task architecture** below), extracts structured
+requirements, scores each job 0–100 against your three CV categories,
+builds a tailored .docx/.pdf resume from the matching base CV, drafts
+application answers, and writes a short summary to your Notion dashboard —
+Company, Job Title, Link, Fit Score, a short fit reason, which resume was
+used, Status, and dates. Once you set a job's Status to **Approved**, it
+will (for Greenhouse/Ashby/Lever only) fill out the real application form,
 answer its specific custom questions, and — only once you've explicitly
 turned on real submission — click Submit. Separately, on whatever cadence
 you run it, the learning loop looks at your approve/skip decisions and any
@@ -21,9 +32,10 @@ gets closer to your actual judgment over time.
 
 **What this does NOT do:** touch LinkedIn/Indeed applications (those stay
 fully manual — you apply yourself using the tailored resume and drafted
-answers), or submit anything for real until you've reviewed dry-run
-screenshots and explicitly opted in. See **Phase 5 safety design** below
-before turning that on.
+answers), submit anything for real until you've reviewed dry-run
+screenshots and explicitly opted in, or read anything back from Notion
+other than that one Status field. See **Phase 5 safety design** below
+before turning real submission on.
 
 ## 1. One-time setup
 
@@ -61,6 +73,17 @@ your CV folder. The scorer reads these as your real, documented experience —
 this is what keeps "leadership" on your resume from satisfying "8 years of
 Engineering Management." If you update those CVs later, re-paste the text
 into the matching `config/cvs/*.md` file so scoring stays current.
+
+### Broad web-search discovery (main discovery channel — a Claude scheduled task)
+`companies.yaml` and LinkedIn Gmail intake only cover companies you've
+hand-listed or LinkedIn's own recommendations — they're not broad
+discovery. That's `seed_discoveries.py`: a Claude scheduled task does the
+actual web search (the same way a general-purpose "find me matching jobs"
+scheduled task already can) and hands its results straight into the
+pipeline in the same run, no Notion round-trip involved. See **Scheduled-
+task architecture** below for the full setup and an example task prompt —
+it's a bit more involved than the other steps here, so it has its own
+section.
 
 ### LinkedIn Gmail intake (optional but recommended)
 LinkedIn has no public jobs API, so this reads the job-alert emails you
@@ -230,6 +253,7 @@ pipeline/
     ashby.py                     # Ashby job-board API
     lever.py                     # Lever job-board API
     gmail_linkedin.py            # LinkedIn job-alert emails via Gmail API
+seed_discoveries.py              # hand-off point for a scheduled task's web-search results (see section 5)
 config/
   companies.example.yaml         # copy to companies.yaml
   cvs/                           # your three base CVs, pre-filled as text for scoring/answers
@@ -241,7 +265,49 @@ data/
   screenshots/                   # filled-application screenshots for you to review before/instead of real submission
 ```
 
-## 5. Phase 5 — auto-apply, and its safety design
+## 5. Scheduled-task architecture — broad web-search discovery
+
+`companies.yaml` only covers companies you've hand-listed, and LinkedIn
+Gmail intake only covers what LinkedIn itself recommends — neither is
+*broad* discovery across the web. That's what a Claude scheduled task is
+for, but it needs to be set up as one continuous run rather than a
+separate automation that writes into Notion (that's the older design this
+replaces — Notion here is a dashboard only, never a discovery source).
+
+**How it actually runs.** A Claude scheduled task can be created with
+"requires this computer" turned on. When you approve that in the desktop
+app, its runs get the same bridge that lets Claude read/write files and
+run commands on your computer directly — not just the cloud. So one
+scheduled run does, in this order, all in one continuous execution:
+
+1. **Web search, in the cloud part of the run** — Claude's own
+   WebSearch/WebFetch tools, searching across the boards and role/sector
+   combinations you want covered (this can reuse the exact search strategy
+   your original task used, if you had one).
+2. **Fetch the real JD text** for each promising candidate (WebFetch), and
+   write them to a small JSON file: `[{"company", "title", "link",
+   "jd_raw", "source"}, ...]`.
+3. **On your computer, in the same run:** stage that JSON file into your
+   pipeline folder, then run `python seed_discoveries.py candidates.json`
+   followed by `python main.py` — extraction, scoring, tailoring (against
+   your real CV files, with LibreOffice), Notion sync, and apply all run
+   as your existing deterministic code, untouched.
+
+**One real constraint:** your computer and the Claude desktop app need to
+be on and online at the moment the task fires, or the local steps for that
+run can't happen. That's the tradeoff of one real system instead of an
+always-on server — worth knowing, not a reason to avoid it if you're
+already running a scheduled task today.
+
+**Setting it up:** create the scheduled task with "requires this computer"
+enabled, approve it in the desktop app (linked to the computer with your
+pipeline folder and CV folder), and give it a prompt covering the three
+steps above — your search scope/tiers/scoring criteria from any earlier
+task prompt can carry over directly into step 1, since that part doesn't
+change; only what happens with the results changes (straight into the
+pipeline instead of straight into Notion).
+
+## 6. Phase 5 — auto-apply, and its safety design
 
 This is the part of the pipeline that can act on the real world (filling
 and potentially submitting a job application), so it's built to fail safe:
@@ -286,7 +352,7 @@ and potentially submitting a job application), so it's built to fail safe:
   restricted/sandboxed environment. Run it from your own machine, a normal
   CI runner, or a server with unrestricted outbound HTTPS.
 
-## 6. Phase 6 — the learning loop
+## 7. Phase 6 — the learning loop
 
 `python learning_run.py`, run on its own cadence (weekly is a reasonable
 starting point — it needs a real batch of new decisions to say anything
