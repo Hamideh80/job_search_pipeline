@@ -27,11 +27,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     fit_score INTEGER,
     score_reason TEXT,
     cv_category TEXT,                  -- AI Transformation Consultant / Technical Business Analyst / Implementation / FDE
-    tailored_resume_path TEXT,
-    answers TEXT,                      -- JSON: application question -> drafted answer (phase 4)
+    tailored_resume_docx TEXT,
+    tailored_resume_pdf TEXT,
+    tailoring_notes TEXT,               -- what was emphasized and why (for your own reference)
+    tailoring_flags TEXT,               -- JSON list: JD requirements the CV genuinely can't support
+    answers TEXT,                      -- JSON: application question -> drafted answer
     notion_page_id TEXT,
     pipeline_status TEXT NOT NULL DEFAULT 'discovered',
-        -- discovered -> extracted -> scored | skipped_low_score -> synced -> applied
+        -- discovered -> extracted -> scored | skipped_low_score -> tailored -> synced -> applied
     decision TEXT,                     -- approved / skipped (read back from Notion Status)
     applied_via TEXT,                  -- Auto / Manual / N/A
     outcome TEXT,                      -- Interview / Rejected / Offer / null

@@ -14,6 +14,6 @@ ashby:
 lever:
   - example-company
 
-# Name of the Gmail label that collects your LinkedIn job-alert emails
-# (on hamidehaahooei@gmail.com). Leave blank/remove to skip LinkedIn intake.
+# Name of the Gmail label that collects your LinkedIn job-alert emails.
+# Leave blank/remove to skip LinkedIn intake.
 linkedin_gmail_label: "LinkedIn Job Alerts"

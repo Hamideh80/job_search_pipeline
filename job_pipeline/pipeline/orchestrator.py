@@ -5,11 +5,12 @@ re-run only processes what's new, and every stage only picks up jobs still
 sitting at the previous pipeline_status.
 """
 import json
+import os
 from pathlib import Path
 
 import yaml
 
-from . import db, extraction, notion_sync, scoring
+from . import answers, db, extraction, notion_sync, scoring, tailoring
 from .discovery import ashby, gmail_linkedin, greenhouse, lever
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
@@ -113,8 +114,63 @@ def run_scoring(conn, candidate_profile: str, calibration_notes: str) -> None:
               f"{best_score} -> {new_status}")
 
 
-def run_notion_sync(conn) -> None:
+_CATEGORY_PROFILE_FILES = {
+    "AI Transformation Consultant": "ai_transformation_consultant.md",
+    "Technical Business Analyst": "technical_business_analyst.md",
+    "Implementation / FDE": "implementation_fde.md",
+}
+
+
+def _load_category_cv_text(category: str) -> str:
+    filename = _CATEGORY_PROFILE_FILES.get(category)
+    if not filename:
+        return ""
+    path = CONFIG_DIR / "cvs" / filename
+    return path.read_text() if path.exists() else ""
+
+
+def run_tailoring(conn, cv_folder: Path, output_dir: Path) -> None:
+    """Builds a tailored resume + drafted evergreen answers for every scored
+    job. Needs python-docx and (for the PDF) LibreOffice available wherever
+    this runs -- see README. If either step fails for a job, it's left at
+    'scored' so a later run retries it rather than silently dropping it."""
     for row in db.jobs_by_status(conn, "scored"):
+        jd_extracted = json.loads(row["jd_extracted"])
+        try:
+            tailor_result = tailoring.build_tailored_resume(
+                cv_folder=cv_folder,
+                category=row["cv_category"],
+                company=row["company"],
+                role=row["title"],
+                jd_extracted=jd_extracted,
+                jd_raw=row["jd_raw"],
+                output_dir=output_dir,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[tailoring] job {row['id']} resume build failed: {exc}")
+            continue
+
+        cv_text = _load_category_cv_text(row["cv_category"])
+        try:
+            answers_result = answers.draft_answers(cv_text, jd_extracted) if cv_text else {}
+        except Exception as exc:  # noqa: BLE001
+            print(f"[tailoring] job {row['id']} answers draft failed: {exc}")
+            answers_result = {}
+
+        db.update_job(
+            conn, row["id"],
+            tailored_resume_docx=tailor_result["docx_path"],
+            tailored_resume_pdf=tailor_result["pdf_path"],
+            tailoring_notes=tailor_result["notes"],
+            tailoring_flags=tailor_result["flags"],
+            answers=answers_result,
+            pipeline_status="tailored",
+        )
+        print(f"[tailoring] job {row['id']} -> {tailor_result['docx_path']}")
+
+
+def run_notion_sync(conn) -> None:
+    for row in db.jobs_by_status(conn, "tailored"):
         page_id = notion_sync.create_job_page(dict(row))
         db.update_job(conn, row["id"], notion_page_id=page_id, pipeline_status="synced")
     notion_sync.poll_decisions(conn)
@@ -122,11 +178,18 @@ def run_notion_sync(conn) -> None:
 
 def run_all(candidate_profile: str, calibration_notes: str = "") -> None:
     conn = db.connect()
+    cv_folder = Path(os.environ["CV_FOLDER_PATH"]) if os.environ.get("CV_FOLDER_PATH") else None
+    output_dir = Path(os.environ.get("CV_OUTPUT_DIR", CONFIG_DIR.parent / "data" / "tailored"))
     try:
         added = run_discovery(conn)
         print(f"[discovery] {added} new postings")
         run_extraction(conn)
         run_scoring(conn, candidate_profile, calibration_notes)
+        if cv_folder:
+            run_tailoring(conn, cv_folder, output_dir)
+        else:
+            print("[tailoring] CV_FOLDER_PATH not set -- skipping tailoring, "
+                  "jobs stay at 'scored' until it's configured")
         run_notion_sync(conn)
     finally:
         conn.close()

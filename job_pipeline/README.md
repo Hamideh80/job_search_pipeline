@@ -1,16 +1,19 @@
-# Job Search Pipeline — Phases 1–3
+# Job Search Pipeline — Phases 1–4
 
-Implements the first milestone from the [build-plan doc](https://claude.ai/code/artifact/aa39646b-7ab7-45d5-b2f4-1ef9267de06c):
-data model + Notion sync, discovery + extraction, and fit scoring (hard
-gate deferred to phase 6).
+Implements phases 1–4 from the [build-plan doc](https://claude.ai/code/artifact/aa39646b-7ab7-45d5-b2f4-1ef9267de06c):
+data model + Notion sync, discovery + extraction, fit scoring (hard gate
+deferred to phase 6), and resume tailoring + drafted answers.
 
 **What this does today:** pulls new postings from your Greenhouse/Ashby/Lever
 watchlist and LinkedIn job-alert emails, extracts structured requirements,
-scores each job 0–100 against your three CV categories, and writes the
-result to your Notion Job Tracker 2026 database for you to review.
+scores each job 0–100 against your three CV categories, builds a tailored
+.docx/.pdf resume from the matching base CV, drafts evergreen application
+answers, and writes the result to your Notion Job Tracker 2026 database for
+you to review.
 
-**What this does NOT do yet:** tailor a resume, draft application answers,
-auto-submit anywhere, or learn from your decisions. Those are phases 4–6.
+**What this does NOT do yet:** auto-submit anywhere, extract a specific
+posting's custom application questions, or learn from your decisions. Those
+are phases 5–6.
 
 ## 1. One-time setup
 
@@ -41,14 +44,17 @@ Fill in the Greenhouse/Ashby/Lever slugs for companies you're actually
 targeting (see comments in the file for how to find each slug).
 
 ### Your base CVs
-Drop your three base CVs into `config/cvs/` as described in
-`config/cvs/README.md`. The scorer reads these as your real, documented
-experience — this is what keeps "leadership" on your resume from
-satisfying "8 years of Engineering Management."
+Already done — `config/cvs/*.md` is pre-filled with the text of your three
+existing category CVs (`Hamideh_Ahooei_CV_AI_Transformation_Consultant.docx`,
+`..._Technical_Business_Analyst.docx`, `..._Implementation_FDE.docx`) from
+your CV folder. The scorer reads these as your real, documented experience —
+this is what keeps "leadership" on your resume from satisfying "8 years of
+Engineering Management." If you update those CVs later, re-paste the text
+into the matching `config/cvs/*.md` file so scoring stays current.
 
 ### LinkedIn Gmail intake (optional but recommended)
 LinkedIn has no public jobs API, so this reads the job-alert emails you
-already get into a Gmail label on `hamidehaahooei@gmail.com`.
+already get into a Gmail label on your own Gmail account.
 1. In [Google Cloud Console](https://console.cloud.google.com/), create a
    project, enable the **Gmail API**, and create OAuth 2.0 credentials
    (Desktop app type). Download the JSON as `config/credentials.json`.
@@ -63,6 +69,29 @@ already get into a Gmail label on `hamidehaahooei@gmail.com`.
 
 Indeed has no intake wired up yet — you weren't sure which account/folder
 to use. Leave it out for now; it's easy to add a twin module later.
+
+### Resume tailoring (phase 4)
+Tailoring opens the matching base CV (already in your CV folder), reworks
+the summary/skills/bullet wording for the specific JD using only facts
+already in that CV, and exports a new `.docx` + `.pdf` named
+`Hamideh_Ahooei_<Company>_<Role>.*` — the same naming convention you already
+use. It needs **LibreOffice** installed (for the PDF step) wherever it runs,
+plus `CV_FOLDER_PATH` set in `.env` to your CV folder's path.
+
+Two ways to run this step:
+- **Standalone (`python main.py`)** — works if the machine running the
+  pipeline has LibreOffice installed. Set `CV_FOLDER_PATH` and
+  `CV_OUTPUT_DIR` in `.env` to real paths on that machine.
+- **Interactively, in a Cowork session connected to your computer** — no
+  setup needed; LibreOffice and python-docx are already available there
+  (this is how phase 4 was built and tested). Just ask Claude to run the
+  tailoring step and point it at a scored job; it reads/writes your CV
+  folder directly through the device connection. This is the easiest path
+  until `CV_FOLDER_PATH` is configured for unattended runs.
+
+If `CV_FOLDER_PATH` isn't set, `python main.py` skips tailoring and jobs sit
+at "scored" (not yet in Notion) until it's configured — nothing is lost, a
+later run picks them up.
 
 ### Install dependencies
 ```
@@ -80,9 +109,13 @@ company + title + JD text, so a re-run only processes what's new. Progress
 prints to stdout: how many new postings were found, and each job's score
 and outcome (scored vs. skipped for being under 70).
 
-Check the Notion database afterward — every job scoring 70+ shows up there
-with its Fit Score, Score Reason, and Source, Status = "To Apply", ready
-for you to review like normal.
+Check the Notion database afterward — every job scoring 70+ that made it
+through tailoring shows up there with its Fit Score, Score Reason, Source,
+CV to Use, and Notes (what was emphasized, plus any gaps the CV genuinely
+couldn't cover), Status = "To Apply", ready for you to review like normal.
+The tailored resume and drafted answers live in the pipeline DB and, for
+the resume, in your CV output folder — the Notion row's Notes field names
+the file.
 
 ## 3. Run it on a schedule
 
@@ -126,10 +159,12 @@ machine that stays around is simpler for that reason.
 main.py                          # entry point
 pipeline/
   db.py                          # SQLite pipeline DB (audit trail, dedup)
-  notion_sync.py                 # write scored jobs to Notion, read Status back
+  notion_sync.py                 # write tailored jobs to Notion, read Status back
   extraction.py                  # raw JD -> structured requirements (Claude)
   scoring.py                     # structured JD -> fit score per CV category (Claude)
-  orchestrator.py                # discover -> extract -> score -> sync
+  tailoring.py                   # structured JD -> tailored .docx/.pdf (Claude + python-docx + LibreOffice)
+  answers.py                     # structured JD -> drafted evergreen application answers (Claude)
+  orchestrator.py                # discover -> extract -> score -> tailor -> sync
   discovery/
     greenhouse.py                # Greenhouse job-board API
     ashby.py                     # Ashby job-board API
@@ -137,18 +172,20 @@ pipeline/
     gmail_linkedin.py            # LinkedIn job-alert emails via Gmail API
 config/
   companies.example.yaml         # copy to companies.yaml
-  cvs/                           # your three base CVs go here
+  cvs/                           # your three base CVs, pre-filled as text for scoring/answers
   calibration_notes.md           # empty until phase 6 exists
 data/
   pipeline.db                    # created on first run
+  tailored/                      # default tailored-resume output if CV_OUTPUT_DIR isn't set
 ```
 
-## 5. What's next (phases 4–6)
+## 5. What's next (phases 5–6)
 
-- **Phase 4** — resume tailoring + drafted application answers, landing in
-  the same Notion row.
 - **Phase 5** — auto-submit on Greenhouse/Ashby/Lever only, behind your
-  approval in Notion (Status left at "To Apply" / moved off "Skip").
+  approval in Notion (Status left at "To Apply" / moved off "Skip"). This is
+  also when per-posting custom application questions get extracted (needs
+  the same browser automation as submitting), replacing the evergreen
+  answers from phase 4.
 - **Phase 6** — the learning loop: reads `jobs_with_decisions()` from the
   pipeline DB weekly, has Claude write calibration notes into
   `config/calibration_notes.md`, which every scoring run already reads.

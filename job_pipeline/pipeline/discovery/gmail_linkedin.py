@@ -2,8 +2,8 @@
 
 LinkedIn has no public jobs API, and scraping it while logged in is risky
 (bot detection, ToS) and brittle. Instead this reads the job-alert emails
-you already receive into a Gmail label (per your comment: on
-hamidehaahooei@gmail.com), and pulls the job links out of them.
+you already receive into a Gmail label on your own Gmail account, and
+pulls the job links out of them.
 
 Setup (one-time, see README):
   1. Make sure LinkedIn's job-alert emails land in a Gmail label -- either
