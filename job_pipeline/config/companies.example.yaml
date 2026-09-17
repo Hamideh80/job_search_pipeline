@@ -1,0 +1,19 @@
+# Copy this file to companies.yaml and fill in the companies you're
+# actually targeting. Each entry is the company's slug/token on that ATS's
+# job board -- find it in the URL of their careers page:
+#   Greenhouse: boards.greenhouse.io/<token>
+#   Ashby:      jobs.ashbyhq.com/<token>
+#   Lever:      jobs.lever.co/<token>
+
+greenhouse:
+  - example-company
+
+ashby:
+  - example-company
+
+lever:
+  - example-company
+
+# Name of the Gmail label that collects your LinkedIn job-alert emails
+# (on hamidehaahooei@gmail.com). Leave blank/remove to skip LinkedIn intake.
+linkedin_gmail_label: "LinkedIn Job Alerts"

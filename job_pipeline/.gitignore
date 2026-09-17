@@ -1,0 +1,9 @@
+.env
+data/
+config/companies.yaml
+config/credentials.json
+config/gmail_token.json
+config/cvs/*.md
+!config/cvs/README.md
+__pycache__/
+*.pyc
