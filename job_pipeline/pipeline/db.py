@@ -31,11 +31,16 @@ CREATE TABLE IF NOT EXISTS jobs (
     tailored_resume_pdf TEXT,
     tailoring_notes TEXT,               -- what was emphasized and why (for your own reference)
     tailoring_flags TEXT,               -- JSON list: JD requirements the CV genuinely can't support
-    answers TEXT,                      -- JSON: application question -> drafted answer
+    answers TEXT,                      -- JSON: evergreen application question -> drafted answer (phase 4)
+    custom_answers TEXT,                -- JSON: this posting's actual custom questions -> drafted answer (phase 5)
+    apply_flags TEXT,                   -- JSON list: fields the auto-fill couldn't confidently answer
+    application_screenshot TEXT,        -- path to the filled-form screenshot, for review before real submit
+    submitted_at TEXT,                  -- when a REAL (non-dry-run) submission happened
     notion_page_id TEXT,
     pipeline_status TEXT NOT NULL DEFAULT 'discovered',
-        -- discovered -> extracted -> scored | skipped_low_score -> tailored -> synced -> applied
-    decision TEXT,                     -- approved / skipped (read back from Notion Status)
+        -- discovered -> extracted -> scored | skipped_low_score -> tailored -> synced
+        -- -> ready_to_submit (dry run filled + screenshotted) -> applied (real submit confirmed)
+    decision TEXT,                     -- approved / skipped (read back from Notion Status -- "Approved" only)
     applied_via TEXT,                  -- Auto / Manual / N/A
     outcome TEXT,                      -- Interview / Rejected / Offer / null
     created_at TEXT NOT NULL,
@@ -61,8 +66,11 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
-def _now() -> str:
+def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_now = now_iso  # internal alias, kept for brevity within this module
 
 
 def job_exists(conn: sqlite3.Connection, jd_hash: str) -> bool:

@@ -3,7 +3,13 @@
 Pipeline -> Notion: create a page for every tailored job (Fit Score, Score
 Reason, Source, CV to Use, Notes, Status = "To Apply").
 Notion -> Pipeline: poll synced pages for Status changes to pick up your
-approve/skip decision, and outcomes (Interview / Rejected / Offer).
+decision, and outcomes (Interview / Rejected / Offer).
+
+Approval is explicit: setting Status to "Approved" is the only thing that
+counts as approved. Leaving it at "To Apply" untouched is treated as
+undecided (not approved) -- given phase 5 can act on an approval by filling
+and (optionally) submitting a real application, "I haven't looked at this
+yet" and "go ahead" need to be different states, not the same one.
 
 NOTION_DATABASE_ID should be the database id from the Job Tracker 2026 URL
 (https://www.notion.so/<workspace>/<DATABASE_ID>?v=...), not the
@@ -23,6 +29,7 @@ client = Client(auth=NOTION_TOKEN)
 
 OUTCOME_STATUSES = {"Interview", "Rejected", "Offer"}
 SKIP_STATUSES = {"Skip", "No longer available"}
+APPROVE_STATUSES = {"Approved"}
 
 
 def create_job_page(job: dict) -> str:
@@ -90,8 +97,9 @@ def fetch_status(page_id: str) -> list[str]:
 def poll_decisions(conn) -> None:
     """For every synced job without a recorded decision yet, check its
     Notion Status and record approve/skip (and any outcome) back into the
-    pipeline DB. Leaving Status at "To Apply" counts as approved; setting
-    it to "Skip" or "No longer available" counts as skipped."""
+    pipeline DB. Only an explicit "Approved" status counts as approved;
+    "Skip" or "No longer available" counts as skipped; anything else
+    (including untouched "To Apply") stays undecided."""
     from . import db
 
     rows = conn.execute(
@@ -102,7 +110,7 @@ def poll_decisions(conn) -> None:
         statuses = set(fetch_status(row["notion_page_id"]))
         if statuses & SKIP_STATUSES:
             db.update_job(conn, row["id"], decision="skipped")
-        elif "To Apply" not in statuses:
+        elif statuses & APPROVE_STATUSES:
             db.update_job(conn, row["id"], decision="approved")
         outcome = statuses & OUTCOME_STATUSES
         if outcome:

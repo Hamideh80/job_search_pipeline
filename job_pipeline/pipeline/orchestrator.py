@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from . import answers, db, extraction, notion_sync, scoring, tailoring
+from . import answers, apply as apply_module, db, extraction, notion_sync, scoring, tailoring
 from .discovery import ashby, gmail_linkedin, greenhouse, lever
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
@@ -176,10 +176,61 @@ def run_notion_sync(conn) -> None:
     notion_sync.poll_decisions(conn)
 
 
-def run_all(candidate_profile: str, calibration_notes: str = "") -> None:
+_APPLY_SOURCES = ("Greenhouse", "Ashby", "Lever")
+
+
+def run_apply(conn, screenshot_dir: Path, applicant_notes: str = "") -> None:
+    """Fills (and, only with AUTO_SUBMIT_CONFIRMED=true, submits) applications
+    for jobs you've explicitly set to "Approved" in Notion. See the safety
+    notes at the top of pipeline/apply.py before enabling real submission.
+    Only acts on Greenhouse/Ashby/Lever jobs -- LinkedIn/Indeed stay manual."""
+    rows = conn.execute(
+        "SELECT * FROM jobs WHERE pipeline_status = 'synced' AND decision = 'approved' "
+        f"AND source IN ({','.join('?' * len(_APPLY_SOURCES))})",
+        _APPLY_SOURCES,
+    ).fetchall()
+    for row in rows:
+        jd_extracted = json.loads(row["jd_extracted"]) if row["jd_extracted"] else {}
+        cv_text = _load_category_cv_text(row["cv_category"])
+        try:
+            result = apply_module.apply_to_job(
+                source=row["source"],
+                job_link=row["link"],
+                resume_pdf_path=row["tailored_resume_pdf"] or "",
+                cv_text=cv_text,
+                jd_extracted=jd_extracted,
+                output_dir=screenshot_dir,
+                company=row["company"],
+                role=row["title"],
+                applicant_notes=applicant_notes,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[apply] job {row['id']} failed: {exc}")
+            continue
+
+        new_status = "applied" if result["submitted"] else "ready_to_submit"
+        db.update_job(
+            conn, row["id"],
+            custom_answers=result["custom_answers"],
+            apply_flags=result["flags"],
+            application_screenshot=result["screenshot_path"],
+            pipeline_status=new_status,
+            submitted_at=db.now_iso() if result["submitted"] else None,
+        )
+        if result["submitted"]:
+            notion_sync.mark_applied(row["notion_page_id"], applied_via="Auto")
+            print(f"[apply] job {row['id']} SUBMITTED -- {row['company']} / {row['title']}")
+        else:
+            flag_note = f" ({len(result['flags'])} field(s) need your input)" if result["flags"] else ""
+            print(f"[apply] job {row['id']} filled, dry-run only{flag_note} "
+                  f"-> {result['screenshot_path']}")
+
+
+def run_all(candidate_profile: str, calibration_notes: str = "", applicant_notes: str = "") -> None:
     conn = db.connect()
     cv_folder = Path(os.environ["CV_FOLDER_PATH"]) if os.environ.get("CV_FOLDER_PATH") else None
     output_dir = Path(os.environ.get("CV_OUTPUT_DIR", CONFIG_DIR.parent / "data" / "tailored"))
+    screenshot_dir = Path(os.environ.get("APPLY_SCREENSHOT_DIR", CONFIG_DIR.parent / "data" / "screenshots"))
     try:
         added = run_discovery(conn)
         print(f"[discovery] {added} new postings")
@@ -191,5 +242,6 @@ def run_all(candidate_profile: str, calibration_notes: str = "") -> None:
             print("[tailoring] CV_FOLDER_PATH not set -- skipping tailoring, "
                   "jobs stay at 'scored' until it's configured")
         run_notion_sync(conn)
+        run_apply(conn, screenshot_dir, applicant_notes)
     finally:
         conn.close()
