@@ -13,18 +13,43 @@ stage only advances jobs that are ready for it. Real submission stays off
 by default -- see the safety notes at the top of pipeline/apply.py before
 setting AUTO_SUBMIT_CONFIRMED=true.
 """
+import shutil
+import sys
 from pathlib import Path
+
+# Force UTF-8 stdout/stderr on Windows so Rich can render Unicode
+# symbols (✓ ✗ etc.) without hitting the cp1252 codec wall.
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from pipeline import apply as apply_module, orchestrator, scoring  # noqa: E402  (import after load_dotenv)
+from pipeline import apply as apply_module, orchestrator, scoring  # noqa: E402
+from pipeline.db import DB_PATH  # noqa: E402
+from pipeline.progress import RunProgress  # noqa: E402
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
+DATA_DIR = Path(__file__).resolve().parent / "data"
+
+
+def _snapshot_db(run_id: str) -> None:
+    if not DB_PATH.exists():
+        return
+    snap_dir = DATA_DIR / "snapshots"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(DB_PATH, snap_dir / f"pipeline_{run_id}.db")
+
 
 if __name__ == "__main__":
     profile = scoring.load_candidate_profile(CONFIG_DIR / "cvs")
     notes = scoring.load_calibration_notes(CONFIG_DIR / "calibration_notes.md")
     applicant_notes = apply_module.load_applicant_notes(CONFIG_DIR / "applicant_notes.md")
-    orchestrator.run_all(profile, notes, applicant_notes)
+
+    with RunProgress(log_dir=DATA_DIR / "logs") as progress:
+        orchestrator.run_all(profile, notes, applicant_notes, progress=progress)
+        _snapshot_db(progress.run_id)
+        progress.info(f"DB snapshot saved → data/snapshots/pipeline_{progress.run_id}.db")
+        progress.info(f"Log saved → data/logs/run_{progress.run_id}.log")

@@ -15,11 +15,13 @@ and the README section on the scheduled-task architecture.
 import json
 import os
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
 from . import answers, apply as apply_module, db, extraction, notion_sync, scoring, tailoring
 from .discovery import ashby, gmail_linkedin, greenhouse, lever
+from .progress import RunProgress
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 SCORE_THRESHOLD = 70
@@ -35,7 +37,7 @@ def load_watchlist() -> dict:
     return yaml.safe_load(path.read_text()) or {}
 
 
-def run_discovery(conn) -> int:
+def run_discovery(conn, progress: RunProgress) -> int:
     watchlist = load_watchlist()
     new_count = 0
 
@@ -49,30 +51,31 @@ def run_discovery(conn) -> int:
             try:
                 postings = fetch_fn(token)
             except Exception as exc:  # noqa: BLE001 -- one bad company shouldn't kill the run
-                print(f"[discovery] {ats}/{token} failed: {exc}")
+                progress.error(f"[discovery] {ats}/{token} failed: {exc}")
                 continue
             for posting in postings:
                 new_count += insert_discovered_job(conn, posting)
 
     if watchlist.get("linkedin_gmail_label"):
-        new_count += _run_linkedin_intake(conn, watchlist["linkedin_gmail_label"])
+        new_count += _run_linkedin_intake(conn, watchlist["linkedin_gmail_label"], progress)
 
+    progress.info(f"{new_count} new posting(s) found")
     return new_count
 
 
-def _run_linkedin_intake(conn, label_name: str) -> int:
+def _run_linkedin_intake(conn, label_name: str, progress: RunProgress) -> int:
     try:
         links = gmail_linkedin.fetch_job_links(label_name)
     except Exception as exc:  # noqa: BLE001
-        print(f"[discovery] LinkedIn Gmail intake failed: {exc}")
+        progress.error(f"[discovery] LinkedIn Gmail intake failed: {exc}")
         return 0
     added = 0
     for link in links:
         if db.job_link_exists(conn, link):
-            continue  # already in DB, skip JD fetch
+            continue
         jd_text = gmail_linkedin.fetch_jd_text(link)
         if not jd_text:
-            print(f"[discovery] could not fetch JD text for {link}, skipping")
+            progress.error(f"[discovery] could not fetch JD text for {link}, skipping")
             continue
         posting = {
             "company": "Unknown (LinkedIn)",
@@ -97,23 +100,27 @@ def insert_discovered_job(conn, posting: dict) -> int:
     return 1
 
 
-def run_extraction(conn) -> None:
+def run_extraction(conn, progress: RunProgress) -> None:
     for row in db.jobs_by_status(conn, "discovered"):
         try:
             extracted = extraction.extract(row["jd_raw"])
         except Exception as exc:  # noqa: BLE001
-            print(f"[extraction] job {row['id']} failed: {exc}")
+            progress.error(f"[extraction] job {row['id']} failed: {exc}")
+            progress.job_update(row["id"], row["title"], row["company"], "extracted", ok=False, extra=str(exc))
             continue
         db.update_job(conn, row["id"], jd_extracted=extracted, pipeline_status="extracted")
+        progress.job_update(row["id"], row["title"], row["company"], "extracted", ok=True)
 
 
-def run_scoring(conn, candidate_profile: str, calibration_notes: str) -> None:
+def run_scoring(conn, candidate_profile: str, calibration_notes: str,
+                progress: RunProgress) -> None:
     for row in db.jobs_by_status(conn, "extracted"):
         jd_extracted = json.loads(row["jd_extracted"])
         try:
             result = scoring.score(jd_extracted, candidate_profile, calibration_notes)
         except Exception as exc:  # noqa: BLE001
-            print(f"[scoring] job {row['id']} failed: {exc}")
+            progress.error(f"[scoring] job {row['id']} failed: {exc}")
+            progress.job_update(row["id"], row["title"], row["company"], "scored", ok=False, extra=str(exc))
             continue
         best_score = result["best_score"]
         new_status = "scored" if best_score >= SCORE_THRESHOLD else "skipped_low_score"
@@ -124,8 +131,9 @@ def run_scoring(conn, candidate_profile: str, calibration_notes: str) -> None:
             score_reason=result["reasoning"],
             pipeline_status=new_status,
         )
-        print(f"[scoring] job {row['id']} ({row['title']!r} @ {row['company']}): "
-              f"{best_score} -> {new_status}")
+        ok = best_score >= SCORE_THRESHOLD
+        extra = f"score = {best_score}" if ok else f"score = {best_score} (below threshold)"
+        progress.job_update(row["id"], row["title"], row["company"], "scored", ok=ok, extra=extra)
 
 
 _CATEGORY_PROFILE_FILES = {
@@ -143,7 +151,7 @@ def _load_category_cv_text(category: str) -> str:
     return path.read_text() if path.exists() else ""
 
 
-def run_tailoring(conn, cv_folder: Path, output_dir: Path) -> None:
+def run_tailoring(conn, cv_folder: Path, output_dir: Path, progress: RunProgress) -> None:
     """Builds a tailored resume + drafted evergreen answers for every scored
     job. Needs python-docx and (for the PDF) LibreOffice available wherever
     this runs -- see README. If either step fails for a job, it's left at
@@ -161,14 +169,15 @@ def run_tailoring(conn, cv_folder: Path, output_dir: Path) -> None:
                 output_dir=output_dir,
             )
         except Exception as exc:  # noqa: BLE001
-            print(f"[tailoring] job {row['id']} resume build failed: {exc}")
+            progress.error(f"[tailoring] job {row['id']} resume build failed: {exc}")
+            progress.job_update(row["id"], row["title"], row["company"], "tailored", ok=False, extra=str(exc))
             continue
 
         cv_text = _load_category_cv_text(row["cv_category"])
         try:
             answers_result = answers.draft_answers(cv_text, jd_extracted) if cv_text else {}
         except Exception as exc:  # noqa: BLE001
-            print(f"[tailoring] job {row['id']} answers draft failed: {exc}")
+            progress.error(f"[tailoring] job {row['id']} answers draft failed: {exc}")
             answers_result = {}
 
         db.update_job(
@@ -180,25 +189,47 @@ def run_tailoring(conn, cv_folder: Path, output_dir: Path) -> None:
             answers=answers_result,
             pipeline_status="tailored",
         )
-        print(f"[tailoring] job {row['id']} -> {tailor_result['docx_path']}")
+        progress.job_update(row["id"], row["title"], row["company"], "tailored", ok=True,
+                            extra=str(tailor_result["docx_path"]))
 
 
-def run_notion_sync(conn) -> None:
+def run_notion_sync(conn, progress: RunProgress) -> None:
     """Creates a Notion dashboard row for every tailored job, then polls for
     Status changes (see notion_sync.py -- this is one-way except that one
     field). Every job's Notion page is always brand-new here: with
     notion_intake removed, the pipeline is the only thing that ever creates
     a Job Tracker 2026 row, so there's nothing to update-in-place."""
+    synced_ids: list[int] = []
     for row in db.jobs_by_status(conn, "tailored"):
-        page_id = notion_sync.create_job_page(dict(row))
+        try:
+            page_id = notion_sync.create_job_page(dict(row))
+        except Exception as exc:  # noqa: BLE001
+            progress.error(f"[sync] job {row['id']} Notion sync failed: {exc}")
+            progress.job_update(row["id"], row["title"], row["company"], "sync", ok=False, extra=str(exc))
+            continue
         db.update_job(conn, row["id"], notion_page_id=page_id, pipeline_status="synced")
+        progress.job_update(row["id"], row["title"], row["company"], "sync", ok=True)
+        synced_ids.append(row["id"])
+
     notion_sync.poll_decisions(conn)
+
+    # Show approval status for jobs synced this run (read back after polling)
+    if synced_ids:
+        placeholders = ",".join("?" * len(synced_ids))
+        rows = conn.execute(
+            f"SELECT id, title, company, decision FROM jobs WHERE id IN ({placeholders})",
+            synced_ids,
+        ).fetchall()
+        for r in rows:
+            approved = r["decision"] == "approved"
+            progress.job_update(r["id"], r["title"], r["company"], "approved", ok=approved)
 
 
 _APPLY_SOURCES = ("Greenhouse", "Ashby", "Lever")
 
 
-def run_apply(conn, screenshot_dir: Path, applicant_notes: str = "") -> None:
+def run_apply(conn, screenshot_dir: Path, progress: RunProgress,
+              applicant_notes: str = "") -> None:
     """Fills (and, only with AUTO_SUBMIT_CONFIRMED=true, submits) applications
     for jobs you've explicitly set to "Approved" in Notion. See the safety
     notes at the top of pipeline/apply.py before enabling real submission.
@@ -224,7 +255,8 @@ def run_apply(conn, screenshot_dir: Path, applicant_notes: str = "") -> None:
                 applicant_notes=applicant_notes,
             )
         except Exception as exc:  # noqa: BLE001
-            print(f"[apply] job {row['id']} failed: {exc}")
+            progress.error(f"[apply] job {row['id']} failed: {exc}")
+            progress.job_update(row["id"], row["title"], row["company"], "applied", ok=False, extra=str(exc))
             continue
 
         new_status = "applied" if result["submitted"] else "ready_to_submit"
@@ -238,29 +270,50 @@ def run_apply(conn, screenshot_dir: Path, applicant_notes: str = "") -> None:
         )
         if result["submitted"]:
             notion_sync.mark_applied(row["notion_page_id"], applied_via="Auto")
-            print(f"[apply] job {row['id']} SUBMITTED -- {row['company']} / {row['title']}")
+            progress.job_update(row["id"], row["title"], row["company"], "applied", ok=True)
         else:
-            flag_note = f" ({len(result['flags'])} field(s) need your input)" if result["flags"] else ""
-            print(f"[apply] job {row['id']} filled, dry-run only{flag_note} "
-                  f"-> {result['screenshot_path']}")
+            flag_note = (f"{len(result['flags'])} field(s) need your input"
+                         if result["flags"] else "dry-run screenshot saved")
+            progress.job_update(row["id"], row["title"], row["company"], "applied",
+                                ok=False, extra=flag_note)
 
 
-def run_all(candidate_profile: str, calibration_notes: str = "", applicant_notes: str = "") -> None:
+def run_all(candidate_profile: str, calibration_notes: str = "",
+            applicant_notes: str = "",
+            progress: Optional[RunProgress] = None) -> None:
     conn = db.connect()
     cv_folder = Path(os.environ["CV_FOLDER_PATH"]) if os.environ.get("CV_FOLDER_PATH") else None
     output_dir = Path(os.environ.get("CV_OUTPUT_DIR", CONFIG_DIR.parent / "data" / "tailored"))
-    screenshot_dir = Path(os.environ.get("APPLY_SCREENSHOT_DIR", CONFIG_DIR.parent / "data" / "screenshots"))
+    screenshot_dir = Path(os.environ.get("APPLY_SCREENSHOT_DIR",
+                                         CONFIG_DIR.parent / "data" / "screenshots"))
+
+    _p = progress  # caller owns the context-manager lifecycle
     try:
-        added = run_discovery(conn)
-        print(f"[discovery] {added} new postings")
-        run_extraction(conn)
-        run_scoring(conn, candidate_profile, calibration_notes)
+        _p.stage_start("discover")
+        added = run_discovery(conn, _p)
+        _p.stage_done("discover", count=added)
+
+        _p.stage_start("extract")
+        run_extraction(conn, _p)
+        _p.stage_done("extract")
+
+        _p.stage_start("score")
+        run_scoring(conn, candidate_profile, calibration_notes, _p)
+        _p.stage_done("score")
+
+        _p.stage_start("tailor")
         if cv_folder:
-            run_tailoring(conn, cv_folder, output_dir)
+            run_tailoring(conn, cv_folder, output_dir, _p)
         else:
-            print("[tailoring] CV_FOLDER_PATH not set -- skipping tailoring, "
-                  "jobs stay at 'scored' until it's configured")
-        run_notion_sync(conn)
-        run_apply(conn, screenshot_dir, applicant_notes)
+            _p.info("CV_FOLDER_PATH not set — skipping tailoring, jobs stay at 'scored'")
+        _p.stage_done("tailor")
+
+        _p.stage_start("sync")
+        run_notion_sync(conn, _p)
+        _p.stage_done("sync")
+
+        _p.stage_start("apply")
+        run_apply(conn, screenshot_dir, _p, applicant_notes)
+        _p.stage_done("apply")
     finally:
         conn.close()
