@@ -1,6 +1,15 @@
-"""Phase 6 entry point -- the learning loop.
+"""DEPRECATED — use `python main.py learn` instead.
 
-    python learning_run.py
+This script is preserved so that any external cron job or scheduled task
+that calls `python learning_run.py` continues to work during the migration
+to the unified CLI. Once you have verified `python main.py learn`, you may
+remove this file.
+
+----
+
+Phase 6 entry point -- the learning loop.
+
+    python learning_run.py   # deprecated; prefer: python main.py learn
 
 Run this on its own, slower cadence (e.g. weekly, once you've accumulated a
 batch of new decisions/outcomes in Notion) -- separate from main.py, which

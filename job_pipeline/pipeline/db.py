@@ -60,11 +60,10 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_jd_hash ON jobs(jd_hash);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(pipeline_status);
 
--- Partial unique index: enforces one DB row per external job ID, but only
--- when source_job_id is actually set (NULLs are excluded so legacy rows
--- without a source_job_id are never affected).
-CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_source_job_id
-    ON jobs(source_job_id) WHERE source_job_id IS NOT NULL;
+-- NOTE: idx_jobs_source_job_id is intentionally absent here.
+-- It references source_job_id which only exists after _apply_migrations runs.
+-- The index is created inside _apply_migrations so it works for both fresh
+-- databases and old ones being upgraded.
 
 -- Gmail intake: processed-message registry.
 -- message_id is the primary key and the authoritative dedup key.
