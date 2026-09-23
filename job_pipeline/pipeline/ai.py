@@ -10,18 +10,26 @@ created on the first call to complete(), not at import time.
 
 Backend selection
 -----------------
-Read from AI_BACKEND env var (default: "anthropic").
-Currently implemented: "anthropic".
-Step 5 will add "claude_code".
+Set via AI_BACKEND env var:
+  AI_BACKEND=anthropic    (default) — Anthropic Python SDK, requires ANTHROPIC_API_KEY
+  AI_BACKEND=claude_code  — Claude Code CLI, uses OAuth/subscription auth
+
+Configuration
+-------------
+  ANTHROPIC_MODEL      model for AnthropicAPIBackend  (default: claude-sonnet-4-5)
+  CLAUDE_CODE_MODEL    model for ClaudeCodeBackend     (default: claude-sonnet-4-5)
+  CLAUDE_CODE_TIMEOUT  seconds per call for CLI backend (default: 120)
 
 Injecting a fake backend for tests
-------------------------------------
+-----------------------------------
     from pipeline.ai import FakeAIBackend, set_ai_client
     set_ai_client(FakeAIBackend({"extraction": json.dumps({...})}))
     # ... run tests ...
     set_ai_client(None)   # resets to default on next get_ai_client() call
 """
 import os
+import subprocess
+import sys
 from typing import Optional
 
 
@@ -46,10 +54,12 @@ class AIClient:
             max_tokens: Hard limit on response length.
             purpose: Optional label (e.g. "extraction", "scoring") used by
                 FakeAIBackend to select a canned response.  Ignored by
-                AnthropicAPIBackend.
+                AnthropicAPIBackend.  Logged by ClaudeCodeBackend.
         """
         raise NotImplementedError
 
+
+# ── Anthropic SDK backend ─────────────────────────────────────────────────────
 
 class AnthropicAPIBackend(AIClient):
     """Anthropic Python SDK backend.
@@ -92,6 +102,130 @@ class AnthropicAPIBackend(AIClient):
         )
         return message.content[0].text.strip()
 
+
+# ── Claude Code CLI backend ───────────────────────────────────────────────────
+
+class ClaudeCodeBackend(AIClient):
+    """Invoke Claude Code CLI non-interactively via subprocess.
+
+    Uses your local Claude Code OAuth/subscription authentication — does NOT
+    require ANTHROPIC_API_KEY.  The API key is explicitly stripped from the
+    child process environment so there is no ambiguity about which auth path
+    is exercised.
+
+    Configuration env vars (all optional):
+        CLAUDE_CODE_MODEL    model alias or full ID (default: claude-sonnet-4-5)
+        CLAUDE_CODE_TIMEOUT  per-call timeout in seconds        (default: 120)
+
+    Why no --dangerously-skip-permissions
+    ---------------------------------------
+    These reasoning calls ask for pure JSON output from a prompt.  The model
+    has no reason to use filesystem, shell, or browser tools.  Skipping
+    permissions would be unnecessary and would widen the attack surface if
+    a prompt ever contained injected tool-call instructions.  No skip flag
+    is used; if tool calls appear in output they are harmless because the
+    output is parsed as JSON and any surrounding prose causes a parse error.
+    """
+
+    _CLI_CANDIDATES = ["claude"]   # searched on PATH; add full paths if needed
+
+    def __init__(self) -> None:
+        self._model = os.environ.get("CLAUDE_CODE_MODEL", "claude-sonnet-4-5")
+        self._timeout = int(os.environ.get("CLAUDE_CODE_TIMEOUT", "120"))
+        self._cli = None
+
+    def _find_cli(self) -> str:
+        """Return the first claude executable found on PATH, or raise."""
+        if self._cli:
+            return self._cli
+        import shutil
+        for name in self._CLI_CANDIDATES:
+            path = shutil.which(name)
+            if path:
+                self._cli = path
+                return path
+        raise FileNotFoundError(
+            "claude CLI not found on PATH. "
+            "Install Claude Code: https://claude.ai/code"
+        )
+
+    @staticmethod
+    def _child_env() -> dict:
+        """Return the os.environ without ANTHROPIC_API_KEY.
+
+        The CLI uses OAuth/keychain auth.  Explicitly removing the API key
+        guarantees the subprocess cannot fall back to it, proving that the
+        ClaudeCodeBackend is independent of the project's API key.
+        """
+        env = dict(os.environ)
+        env.pop("ANTHROPIC_API_KEY", None)
+        return env
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int,
+        purpose: Optional[str] = None,
+    ) -> str:
+        """Run the prompt through the Claude Code CLI and return the text.
+
+        Raises
+        ------
+        FileNotFoundError   claude CLI not found on PATH.
+        TimeoutError        Call exceeded CLAUDE_CODE_TIMEOUT seconds.
+        RuntimeError        CLI exited non-zero or returned empty output.
+        """
+        cli = self._find_cli()
+        cmd = [
+            cli,
+            "-p",                        # non-interactive / print mode
+            "--output-format", "text",   # plain text stdout (no JSON envelope)
+            "--no-session-persistence",  # don't bleed state between calls
+            "--model", self._model,
+        ]
+
+        label = f"[claude_code/{purpose or 'unknown'}]"
+        try:
+            result = subprocess.run(
+                cmd,
+                input=prompt,           # prompt via stdin (no arg-length limits)
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
+                env=self._child_env(),
+                # shell=False is the default — no shell expansion, no injection risk
+            )
+        except subprocess.TimeoutExpired:
+            raise TimeoutError(
+                f"{label} timed out after {self._timeout}s. "
+                "Increase CLAUDE_CODE_TIMEOUT if needed."
+            )
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                "claude CLI not found on PATH. "
+                "Install Claude Code: https://claude.ai/code"
+            )
+
+        if result.returncode != 0:
+            stderr_snip = result.stderr.strip()[:400] if result.stderr else ""
+            stdout_snip = result.stdout.strip()[:200] if result.stdout else ""
+            raise RuntimeError(
+                f"{label} CLI exited with code {result.returncode}. "
+                f"stderr={stderr_snip!r} stdout={stdout_snip!r}"
+            )
+
+        output = result.stdout.strip()
+        if not output:
+            raise RuntimeError(
+                f"{label} CLI returned empty output (exit 0). "
+                f"stderr={result.stderr.strip()[:200]!r}"
+            )
+
+        return output
+
+
+# ── Fake backend (tests only) ─────────────────────────────────────────────────
 
 class FakeAIBackend(AIClient):
     """Test-only backend: returns canned responses without any network calls.
@@ -160,8 +294,9 @@ def _build_backend(name: Optional[str] = None) -> AIClient:
     backend = (name or os.environ.get("AI_BACKEND", "anthropic")).lower().strip()
     if backend == "anthropic":
         return AnthropicAPIBackend()
+    if backend == "claude_code":
+        return ClaudeCodeBackend()
     raise ValueError(
         f"Unknown AI_BACKEND {backend!r}. "
-        "Valid values: 'anthropic'. "
-        "('claude_code' will be added in Step 5.)"
+        "Valid values: 'anthropic', 'claude_code'."
     )
