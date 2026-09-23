@@ -78,6 +78,11 @@ def job_exists(conn: sqlite3.Connection, jd_hash: str) -> bool:
     return row is not None
 
 
+def job_link_exists(conn: sqlite3.Connection, link: str) -> bool:
+    row = conn.execute("SELECT 1 FROM jobs WHERE link = ?", (link,)).fetchone()
+    return row is not None
+
+
 def insert_job(conn: sqlite3.Connection, *, company: str, title: str, link: str,
                source: str, jd_raw: str) -> int:
     jd_hash = hash_jd(company, title, jd_raw)

@@ -68,6 +68,8 @@ def _run_linkedin_intake(conn, label_name: str) -> int:
         return 0
     added = 0
     for link in links:
+        if db.job_link_exists(conn, link):
+            continue  # already in DB, skip JD fetch
         jd_text = gmail_linkedin.fetch_jd_text(link)
         if not jd_text:
             print(f"[discovery] could not fetch JD text for {link}, skipping")

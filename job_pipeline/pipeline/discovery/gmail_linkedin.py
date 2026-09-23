@@ -25,6 +25,7 @@ trustworthy).
 """
 import base64
 import re
+import time
 from pathlib import Path
 
 import requests
@@ -34,13 +35,17 @@ CONFIG_DIR = Path(__file__).resolve().parent.parent.parent / "config"
 CREDENTIALS_PATH = CONFIG_DIR / "credentials.json"
 TOKEN_PATH = CONFIG_DIR / "gmail_token.json"
 
-LINKEDIN_LINK_RE = re.compile(r"https://www\.linkedin\.com/comm/jobs/view/\d+[^\s\"<>]*")
+LINKEDIN_LINK_RE = re.compile(r"https://www\.linkedin\.com/comm/jobs/view/(\d+)[^\s\"<>]*")
+JOB_ID_RE = re.compile(r"/jobs/view/(\d+)")
 JD_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
     )
 }
+# Patterns to extract title and company from LinkedIn alert email text
+_TITLE_RE = re.compile(r"(?:^|\n)([A-Z][^\n]{5,80})\n([A-Z][^\n]{2,60})\n", re.MULTILINE)
+_LOGIN_MARKERS = ("Sign in", "Join now", "authwall", "checkpoint/lg")
 
 
 def _get_service():
@@ -63,10 +68,9 @@ def _get_service():
 
 
 def fetch_job_links(label_name: str = "LinkedIn Job Alerts", max_messages: int = 50) -> list[str]:
-    """Returns job-posting links pulled out of alert emails in the given
-    Gmail label. Titles/companies aren't reliably parseable from the alert
-    email itself -- fetch_jd_text (or the extraction step) reads the job
-    page for those."""
+    """Returns deduplicated clean LinkedIn job URLs from alert emails in the
+    given Gmail label. Uses job IDs so the same job from multiple emails
+    only appears once."""
     service = _get_service()
     label_id = _find_label_id(service, label_name)
     if not label_id:
@@ -75,27 +79,49 @@ def fetch_job_links(label_name: str = "LinkedIn Job Alerts", max_messages: int =
     results = service.users().messages().list(
         userId="me", labelIds=[label_id], maxResults=max_messages
     ).execute()
-    links: set[str] = set()
+    job_ids: set[str] = set()
     for msg_meta in results.get("messages", []):
         msg = service.users().messages().get(
             userId="me", id=msg_meta["id"], format="full"
         ).execute()
         body = _extract_body(msg)
-        links.update(LINKEDIN_LINK_RE.findall(body))
-    return sorted(links)
+        for match in LINKEDIN_LINK_RE.finditer(body):
+            job_ids.add(match.group(1))
+    # Return clean public URLs — no tracking tokens, better fetch success rate
+    return [f"https://www.linkedin.com/jobs/view/{jid}/" for jid in sorted(job_ids)]
 
 
 def fetch_jd_text(job_link: str) -> str | None:
-    """Best-effort fetch of the job page text. Returns None if LinkedIn
-    blocks the request -- caller should skip rather than score a blank JD."""
+    """Fetch job description via LinkedIn's guest API endpoint, which returns
+    structured JSON without requiring login. Falls back to plain HTML fetch
+    if the guest API fails. Returns None if both approaches are blocked."""
+    job_id_match = JOB_ID_RE.search(job_link)
+    if job_id_match:
+        job_id = job_id_match.group(1)
+        try:
+            time.sleep(0.8)  # respect LinkedIn rate limits across bulk fetches
+            resp = requests.get(
+                f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}",
+                headers=JD_HEADERS, timeout=20,
+            )
+            if resp.status_code == 200:
+                text = re.sub(r"<[^>]+>", " ", resp.text)
+                text = re.sub(r"\s+", " ", text).strip()
+                if len(text) > 300 and not any(m in resp.text for m in _LOGIN_MARKERS):
+                    return text
+        except requests.RequestException:
+            pass
+    # Fallback: plain HTML fetch
     try:
         resp = requests.get(job_link, headers=JD_HEADERS, timeout=20)
         resp.raise_for_status()
     except requests.RequestException:
         return None
+    if any(marker in resp.text for marker in _LOGIN_MARKERS):
+        return None
     text = re.sub(r"<[^>]+>", " ", resp.text)
     text = re.sub(r"\s+", " ", text).strip()
-    return text if len(text) > 200 else None
+    return text if len(text) > 500 else None
 
 
 def _find_label_id(service, label_name: str) -> str | None:
@@ -119,5 +145,11 @@ def _extract_body(message: dict) -> str:
 if __name__ == "__main__":
     import sys
     if "--authorize" in sys.argv:
-        _get_service()
-        print("Gmail authorized, token cached at", TOKEN_PATH)
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_PATH), SCOPES)
+        print("\nStarting local OAuth server on port 8080.")
+        print("A URL will appear below -- open it in your browser and sign in with hamidehaahoei@gmail.com.")
+        print("When sign-in is complete the server captures the token automatically.\n")
+        creds = flow.run_local_server(port=8080, open_browser=False)
+        TOKEN_PATH.write_text(creds.to_json())
+        print("\nGmail authorized, token cached at", TOKEN_PATH)

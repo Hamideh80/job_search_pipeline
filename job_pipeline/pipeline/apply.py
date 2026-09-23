@@ -161,9 +161,34 @@ def apply_greenhouse(*, job_link: str, resume_pdf_path: str, cv_text: str,
                 continue
             try:
                 if tag == "select":
-                    el.select_option(label=answer)
+                    options = el.evaluate(
+                        "e => Array.from(e.options).map(o => o.text.trim()).filter(o => o)"
+                    )
+                    match = (
+                        next((o for o in options if o == answer), None)
+                        or next((o for o in options if o.lower() == answer.lower()), None)
+                        or next((o for o in options if answer.lower() in o.lower()), None)
+                    )
+                    if match:
+                        el.select_option(label=match)
+                    else:
+                        result["flags"].append(
+                            f"No option match for {label!r}: tried {answer!r}, "
+                            f"available: {options}"
+                        )
                 else:
-                    el.fill(str(answer))
+                    # React typeahead input: type to filter, then click matching dropdown option
+                    el.click()
+                    el.fill("")
+                    el.type(str(answer), delay=80)
+                    page.wait_for_timeout(600)
+                    opt = page.locator("div[role='option'], .select__option").filter(
+                        has_text=str(answer)
+                    ).first
+                    if opt.count() and opt.is_visible():
+                        opt.click()
+                        page.wait_for_timeout(300)
+                    # else: plain text field, value already typed — leave as-is
             except Exception as exc:  # noqa: BLE001 -- one bad field shouldn't kill the run
                 result["flags"].append(f"Couldn't fill {label!r} ({tag}): {exc}")
 

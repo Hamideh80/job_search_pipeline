@@ -3,12 +3,11 @@
 config/credentials.json
 config/gmail_token.json
 
-# Personal data -- your job pipeline DB, calibration notes, applicant
-# notes, CVs, and any filled-application screenshots
+# Personal data -- your job pipeline DB, calibration notes, CVs, and applicant profile
 data/
-config/companies.yaml
-config/calibration_notes.md
+candidates.json
 config/applicant_notes.md
+config/calibration_notes.md
 config/cvs/*.md
 !config/cvs/README.md
 

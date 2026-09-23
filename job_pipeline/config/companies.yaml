@@ -1,0 +1,29 @@
+# Copy this file to companies.yaml and fill in the companies you're
+# actually targeting. Each entry is the company's slug/token on that ATS's
+# job board -- find it in the URL of their careers page:
+#   Greenhouse: boards.greenhouse.io/<token>
+#   Ashby:      jobs.ashbyhq.com/<token>
+#   Lever:      jobs.lever.co/<token>
+
+greenhouse:
+  - coveoen          # Coveo — Montreal AI/search platform, strong AI transformation fit
+  - lightspeedhq     # Lightspeed Commerce — Montreal, commerce tech, TBA/implementation roles
+  - ada18            # Ada — Toronto, AI customer-service platform, implementation & AI roles
+  - leagueinc        # League — Toronto, digital health platform, delivery & solutions roles
+  - visiersolutionsinc  # Visier — Vancouver, people analytics SaaS, solution consultant roles
+  - benevity         # Benevity — Calgary, CSR SaaS, implementation & technical roles
+  - d2l              # D2L Brightspace — Waterloo, ed-tech, solutions engineer roles
+  - hootsuite        # Hootsuite — Vancouver, social media platform, AI & ops roles
+  - caylent          # Caylent — AWS consulting, forward-deployed & implementation roles
+
+ashby:
+  - cohere           # Cohere — Toronto, enterprise AI company, AI transformation & solutions roles
+  - klue             # Klue — Vancouver, competitive intelligence SaaS, AI & customer success roles
+
+lever:
+  - 1password        # 1Password — Toronto, security platform, remote-Canada friendly
+  - ataccama         # Ataccama — data governance platform, technical consultant roles
+
+# Name of the Gmail label that collects your LinkedIn job-alert emails.
+# Leave blank/remove to skip LinkedIn intake.
+linkedin_gmail_label: "linkedin"
