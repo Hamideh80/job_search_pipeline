@@ -37,13 +37,9 @@ Design choices worth knowing:
   that future scoring runs read.
 """
 import json
-import os
 from pathlib import Path
 
-from anthropic import Anthropic
-
-client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+from .ai import get_ai_client
 
 MIN_DECISIONS_FOR_PATTERN = 5
 
@@ -124,12 +120,7 @@ def analyze_decisions(decided_jobs: list[dict], current_notes: str) -> dict:
         decision_history=json.dumps(history, indent=2),
         min_decisions=MIN_DECISIONS_FOR_PATTERN,
     )
-    message = client.messages.create(
-        model=MODEL,
-        max_tokens=1536,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = message.content[0].text.strip()
+    raw = get_ai_client().complete(prompt, max_tokens=1536, purpose="learning")
     raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(raw)
 

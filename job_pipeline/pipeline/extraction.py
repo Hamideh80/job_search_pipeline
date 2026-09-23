@@ -5,12 +5,8 @@ and it's kept separate from scoring so the same extraction can be reused
 once the hard gate comes back (phase 6, see the build-plan doc).
 """
 import json
-import os
 
-from anthropic import Anthropic
-
-client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+from .ai import get_ai_client
 
 EXTRACTION_PROMPT = """You are extracting structured requirements from a job description.
 Read the JD below and return ONLY valid JSON (no prose, no markdown fences) matching this shape:
@@ -37,11 +33,7 @@ JOB DESCRIPTION:
 
 
 def extract(jd_text: str) -> dict:
-    message = client.messages.create(
-        model=MODEL,
-        max_tokens=1024,
-        messages=[{"role": "user", "content": EXTRACTION_PROMPT.format(jd_text=jd_text[:15000])}],
-    )
-    raw = message.content[0].text.strip()
+    prompt = EXTRACTION_PROMPT.format(jd_text=jd_text[:15000])
+    raw = get_ai_client().complete(prompt, max_tokens=1024, purpose="extraction")
     raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(raw)

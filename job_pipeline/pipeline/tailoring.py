@@ -20,15 +20,11 @@ framed as part-time volunteer leadership, and don't reframe a prototype or
 personal initiative as production ML research.
 """
 import json
-import os
 import re
 import subprocess
 from pathlib import Path
 
-from anthropic import Anthropic
-
-client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+from .ai import get_ai_client
 
 CATEGORY_CV_FILES = {
     "AI Transformation Consultant": "Hamideh_Ahooei_CV_AI_Transformation_Consultant.docx",
@@ -131,12 +127,7 @@ def propose_edits(doc, jd_extracted: dict, jd_raw: str) -> dict:
         jd_extracted=json.dumps(jd_extracted, indent=2),
         jd_raw=jd_raw[:6000],
     )
-    message = client.messages.create(
-        model=MODEL,
-        max_tokens=2048,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = message.content[0].text.strip()
+    raw = get_ai_client().complete(prompt, max_tokens=2048, purpose="tailoring")
     raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(raw)
 

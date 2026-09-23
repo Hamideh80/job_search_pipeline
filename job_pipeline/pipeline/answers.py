@@ -10,12 +10,8 @@ alongside it. These evergreen answers are still useful as a starting draft
 you paste from and edit per question.
 """
 import json
-import os
 
-from anthropic import Anthropic
-
-client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+from .ai import get_ai_client
 
 EVERGREEN_QUESTIONS = [
     "Why are you interested in this role?",
@@ -56,11 +52,6 @@ def draft_answers(cv_text: str, jd_extracted: dict) -> dict:
         jd_extracted=json.dumps(jd_extracted, indent=2),
         questions="\n".join(f"- {q}" for q in EVERGREEN_QUESTIONS),
     )
-    message = client.messages.create(
-        model=MODEL,
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = message.content[0].text.strip()
+    raw = get_ai_client().complete(prompt, max_tokens=1024, purpose="answers")
     raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(raw)

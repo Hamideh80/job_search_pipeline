@@ -33,10 +33,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from anthropic import Anthropic
-
-client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+from .ai import get_ai_client
 
 AUTO_SUBMIT_CONFIRMED = os.environ.get("AUTO_SUBMIT_CONFIRMED", "false").strip().lower() == "true"
 APPLY_HEADLESS = os.environ.get("APPLY_HEADLESS", "true").strip().lower() != "false"
@@ -91,11 +88,7 @@ def draft_custom_answers(questions: list[str], cv_text: str, jd_extracted: dict,
         jd_extracted=json.dumps(jd_extracted, indent=2),
         questions="\n".join(f"- {q}" for q in questions),
     )
-    message = client.messages.create(
-        model=MODEL, max_tokens=1536,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = message.content[0].text.strip()
+    raw = get_ai_client().complete(prompt, max_tokens=1536, purpose="apply_custom_answers")
     raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(raw).get("answers", {})
 

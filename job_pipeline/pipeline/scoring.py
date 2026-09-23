@@ -12,13 +12,9 @@ Search 2026 project instructions (career paths, strong/transferable
 matches, gaps, interview risk) -- keep the two in sync if either changes.
 """
 import json
-import os
 from pathlib import Path
 
-from anthropic import Anthropic
-
-client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+from .ai import get_ai_client
 
 CV_CATEGORIES = [
     "AI Transformation Consultant",
@@ -73,12 +69,7 @@ def score(jd_extracted: dict, candidate_profile: str, calibration_notes: str = "
         jd_extracted=json.dumps(jd_extracted, indent=2),
         categories=", ".join(CV_CATEGORIES),
     )
-    message = client.messages.create(
-        model=MODEL,
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = message.content[0].text.strip()
+    raw = get_ai_client().complete(prompt, max_tokens=1024, purpose="scoring")
     raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(raw)
 

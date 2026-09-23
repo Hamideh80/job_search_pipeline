@@ -16,7 +16,7 @@ gate for phase 5 auto-apply. Setting Status to "Approved" is the only
 thing that counts as approved -- leaving it at "To Apply" untouched is
 undecided, not approved, since phase 5 can act on an approval by filling
 and (optionally) submitting a real application. "Skip" / "No longer
-available" record a skip, and Interview/Rejected/Offer feed the phase 6
+available" records a skip, and Interview/Rejected/Offer feed the phase 6
 learning loop. That one field is the entire read-back; nothing else in
 Notion is ever read by the pipeline.
 
@@ -24,21 +24,55 @@ NOTION_DATABASE_ID should be the database id from the Job Tracker 2026 URL
 (https://www.notion.so/<workspace>/<DATABASE_ID>?v=...), not the
 collection:// data-source id -- the public Notion API's pages.create takes
 a database_id.
+
+Importing this module is safe without NOTION_TOKEN or NOTION_DATABASE_ID
+set -- the Notion client is created lazily on first use, so tests and
+read-only commands (status, discover) can import pipeline.orchestrator
+without needing Notion credentials.
 """
 import os
 from datetime import date
-
-from notion_client import Client
-
-NOTION_TOKEN = os.environ["NOTION_TOKEN"]
-NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
-
-client = Client(auth=NOTION_TOKEN)
 
 OUTCOME_STATUSES = {"Interview", "Rejected", "Offer"}
 SKIP_STATUSES = {"Skip", "No longer available"}
 APPROVE_STATUSES = {"Approved"}
 
+# ── lazy Notion client ────────────────────────────────────────────────────────
+
+_notion_client = None
+
+
+def _notion():
+    """Return the Notion client, creating it on first call.
+
+    Raises a clear RuntimeError (not a KeyError) if NOTION_TOKEN is absent,
+    so the error message points directly at what needs to be set.
+    """
+    global _notion_client
+    if _notion_client is None:
+        token = os.environ.get("NOTION_TOKEN")
+        if not token:
+            raise RuntimeError(
+                "NOTION_TOKEN is not set. Add it to your .env file. "
+                "Required for Notion sync operations."
+            )
+        from notion_client import Client
+        _notion_client = Client(auth=token)
+    return _notion_client
+
+
+def _db_id() -> str:
+    """Return the Notion database ID, with a clear error if absent."""
+    db_id = os.environ.get("NOTION_DATABASE_ID")
+    if not db_id:
+        raise RuntimeError(
+            "NOTION_DATABASE_ID is not set. Add it to your .env file. "
+            "Required for Notion sync operations."
+        )
+    return db_id
+
+
+# ── public API ────────────────────────────────────────────────────────────────
 
 def create_job_page(job: dict) -> str:
     """job: a pipeline DB row (as a dict). Returns the new Notion page id.
@@ -66,7 +100,7 @@ def create_job_page(job: dict) -> str:
     if notes:
         props["Notes"] = {"rich_text": [{"text": {"content": notes[:2000]}}]}
 
-    page = client.pages.create(parent={"database_id": NOTION_DATABASE_ID}, properties=props)
+    page = _notion().pages.create(parent={"database_id": _db_id()}, properties=props)
     return page["id"]
 
 
@@ -92,7 +126,7 @@ def _build_notes(job: dict) -> str:
 
 
 def mark_applied(page_id: str, applied_via: str = "Auto") -> None:
-    client.pages.update(
+    _notion().pages.update(
         page_id=page_id,
         properties={
             "Status": {"multi_select": [{"name": "Applied"}]},
@@ -103,7 +137,7 @@ def mark_applied(page_id: str, applied_via: str = "Auto") -> None:
 
 
 def fetch_status(page_id: str) -> list[str]:
-    page = client.pages.retrieve(page_id=page_id)
+    page = _notion().pages.retrieve(page_id=page_id)
     return [opt["name"] for opt in page["properties"]["Status"]["multi_select"]]
 
 
