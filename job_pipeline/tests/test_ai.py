@@ -135,17 +135,17 @@ _FAKE_EXTRACTION = {
 
 _FAKE_SCORING = {
     "scores": {
-        "AI Transformation Consultant": 85,
-        "Technical Business Analyst": 75,
-        "Implementation / FDE": 60,
+        "FDE / Solutions": 85,
+        "Agentic AI": 70,
+        "Technical Leadership": 60,
     },
-    "best_category": "AI Transformation Consultant",
+    "best_category": "FDE / Solutions",
     "best_score": 85,
-    "strong_matches": ["AI and data experience"],
+    "strong_matches": ["Full-lifecycle implementation and client delivery"],
     "transferable_matches": [],
     "gaps": [],
     "interview_risk": [],
-    "reasoning": "Strong match for AI roles based on documented experience.",
+    "reasoning": "Strong match for FDE/Solutions based on documented delivery experience.",
 }
 
 
@@ -179,7 +179,7 @@ def test_fake_backend_drives_scoring():
         ai.set_ai_client(None)
 
     assert result["best_score"] == 85
-    assert result["best_category"] == "AI Transformation Consultant"
+    assert result["best_category"] == "FDE / Solutions"
     assert len(fake.calls) == 1
     assert fake.calls[0]["purpose"] == "scoring"
 

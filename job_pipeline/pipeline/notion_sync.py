@@ -142,12 +142,17 @@ def fetch_status(page_id: str) -> list[str]:
 
 
 def poll_decisions(conn) -> None:
-    """For every synced job without a recorded decision yet, check its
-    Notion Status and record approve/skip (and any outcome) back into the
-    pipeline DB. Only an explicit "Approved" status counts as approved;
-    "Skip" or "No longer available" counts as skipped; anything else
-    (including untouched "To Apply") stays undecided. This is the ONLY
-    thing ever read back from Notion."""
+    """For every shortlisted job without a recorded decision yet, check its
+    Notion Status and record approve/skip back into the pipeline DB.
+
+    Approved   → decision='approved', pipeline_status='approved'
+                 (makes the job eligible for tailoring on the next run)
+    Skipped    → decision='skipped',  pipeline_status='skipped_human'
+    Outcome    → also recorded (Interview/Rejected/Offer) for the learning loop.
+
+    Only an explicit "Approved" status counts as approved; "To Apply" (the
+    default) stays undecided. This is the ONLY field ever read back from Notion.
+    """
     from . import db
 
     rows = conn.execute(
@@ -157,9 +162,11 @@ def poll_decisions(conn) -> None:
     for row in rows:
         statuses = set(fetch_status(row["notion_page_id"]))
         if statuses & SKIP_STATUSES:
-            db.update_job(conn, row["id"], decision="skipped")
+            db.update_job(conn, row["id"],
+                          decision="skipped", pipeline_status="skipped_human")
         elif statuses & APPROVE_STATUSES:
-            db.update_job(conn, row["id"], decision="approved")
+            db.update_job(conn, row["id"],
+                          decision="approved", pipeline_status="approved")
         outcome = statuses & OUTCOME_STATUSES
         if outcome:
             db.update_job(conn, row["id"], outcome=sorted(outcome)[0])

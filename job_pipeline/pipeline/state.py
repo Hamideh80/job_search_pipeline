@@ -30,7 +30,8 @@ class JobStatus(str, Enum):
     NEEDS_JD          = "needs_jd"          # JD text unavailable at discovery time
     EXTRACTED         = "extracted"
     SCORED            = "scored"
-    SKIPPED_LOW_SCORE = "skipped_low_score"  # score < threshold; never sent to Notion
+    SKIPPED_LOW_SCORE = "skipped_low_score"        # score < threshold; never sent to Notion
+    SKIPPED_LANGUAGE  = "skipped_language_requirement"  # hard French-mandatory filter
     SHORTLISTED       = "shortlisted"        # score ≥ threshold; Notion card created
     SKIPPED_HUMAN     = "skipped_human"      # human set Skip in Notion
     APPROVED          = "approved"           # human set Approved in Notion
@@ -56,14 +57,17 @@ class JobStatus(str, Enum):
 # ---------------------------------------------------------------------------
 TRANSITIONS: dict[str, frozenset] = {
     # ── main lifecycle ──────────────────────────────────────────────────
-    "discovered":        frozenset({"extracted", "needs_jd", "failed"}),
+    "discovered":        frozenset({"extracted", "needs_jd", "failed",
+                                    "skipped_language_requirement"}),
     "needs_jd":          frozenset({"extracted", "failed"}),
-    "extracted":         frozenset({"scored", "skipped_low_score", "failed"}),
+    "extracted":         frozenset({"scored", "skipped_low_score", "failed",
+                                    "shortlisted"}),  # scoring now goes directly to shortlisted
     "scored":            frozenset({
                              "shortlisted", "skipped_low_score", "failed",
                              "tailored",        # legacy branch: scored → tailored
                          }),
-    "skipped_low_score": frozenset(),           # terminal
+    "skipped_low_score":          frozenset(),   # terminal
+    "skipped_language_requirement": frozenset(), # terminal
     "shortlisted":       frozenset({
                              "approved", "skipped_human", "failed",
                              "tailored",        # legacy branch: shortlisted → tailored

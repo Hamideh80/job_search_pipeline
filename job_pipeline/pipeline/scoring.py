@@ -1,15 +1,13 @@
-"""Fit scoring against the three CV categories.
+"""Fit scoring against the three canonical Master CV role families.
 
-Phase 1-3: no automatic hard-gate reject (parked per your comment on the
-build-plan doc). Must-have gaps extracted upstream are weighted heavily
-into the score itself and called out in the reasoning, instead of silently
-rejecting a job before you ever see it. The gate comes back later, learned
-from your actual approve/skip pattern -- see the "Fit Scoring (Hard Gate
-Deferred)" section of the doc.
+Each job is classified into one of three families based on the actual work
+described in the JD — not title-matching alone. The AI returns a score for
+all three families and picks the best fit.
 
-The rubric mirrors the fit-analysis framework already defined in the Job
-Search 2026 project instructions (career paths, strong/transferable
-matches, gaps, interview risk) -- keep the two in sync if either changes.
+Score >= SCORE_THRESHOLD (70) → shortlisted in Notion for human review.
+Score < 70 → skipped_low_score (never shown to the human).
+
+Tailoring only happens AFTER the human approves in Notion.
 """
 import json
 from pathlib import Path
@@ -17,42 +15,73 @@ from pathlib import Path
 from .ai import get_ai_client
 
 CV_CATEGORIES = [
-    "AI Transformation Consultant",
-    "Technical Business Analyst",
-    "Implementation / FDE",
+    "FDE / Solutions",
+    "Agentic AI",
+    "Technical Leadership",
 ]
 
-SCORING_PROMPT = """You are scoring a job description against a candidate's real,
-documented experience. Be strict: do not let a keyword match (e.g. the word
-"leadership" appearing somewhere) stand in for a specific stated requirement
-(e.g. "8 years of Engineering Management experience"). If a must-have isn't
-actually supported by the candidate profile, say so plainly in the
-reasoning and score it down accordingly -- do not gate the job out
-entirely; a low score is enough for the human reviewer to skip it. Weigh
-the calibration notes below if any are given -- they reflect the
-candidate's own past decisions and should shift how strictly or leniently
-you weigh similar gaps in similar roles.
+SCORING_PROMPT = """You are scoring a job description against a candidate's documented \
+experience and classifying it into the best-fit role family.
+
+ROLE FAMILY DEFINITIONS
+Use these definitions to classify the role based on its actual work requirements,
+not just the job title.
+
+FDE / Solutions:
+  Core signal: hands-on technical delivery, implementation, configuration, integration,
+  requirements discovery, troubleshooting, and deployment/adoption with customers or
+  stakeholders. Quota-carrying pre-sales roles or roles requiring extensive years of
+  external consulting without engineering depth do NOT belong here.
+  Examples: Forward Deployed Engineer, Solutions Engineer, AI Solutions Engineer,
+  Implementation Engineer, Implementation Consultant, Customer Engineer, Integration
+  Engineer, Technical Solutions Engineer.
+
+Agentic AI:
+  Core signal: building applied AI/agent systems — orchestration, agents, tool use,
+  retrieval/grounding, MCP integration, evaluation, workflow automation.
+  Do NOT classify here if the core work is ML research, model training, data science,
+  MLOps, senior Python backend platform engineering, or production AI infrastructure.
+  Examples: Agentic AI Engineer, Applied AI Engineer, AI Engineer, AI Agent Engineer,
+  AI Workflow Engineer, AI Automation Engineer, AI Integration Engineer, applied LLM roles.
+
+Technical Leadership:
+  Core signal: technical initiative ownership, cross-functional delivery, stakeholder
+  alignment, AI adoption/enablement, technical program or delivery leadership.
+  Engineering Manager roles qualify ONLY when prior formal people-management experience
+  is NOT a hard requirement in the JD.
+  Examples: Technical Program Manager – AI, AI Delivery Manager, AI Enablement Manager,
+  Technical Delivery Manager, Digital Transformation Manager, AI Transformation Manager,
+  Engineering Lead.
+
+IMPORTANT: classify by the actual responsibilities and requirements in the JD — not by
+keyword or title matching alone. A title with "AI" may still be Technical Leadership if
+the core work is program management, not engineering.
 
 CANDIDATE PROFILE:
 {candidate_profile}
 
-CALIBRATION NOTES (from past approve/skip decisions and interview outcomes -- may be empty):
+CALIBRATION NOTES (from past approve/skip decisions and interview outcomes — may be empty):
 {calibration_notes}
 
 STRUCTURED JOB REQUIREMENTS:
 {jd_extracted}
 
-Score the fit for EACH of these three CV categories: {categories}.
+Score the fit for EACH of these three role families: {categories}.
+Be strict: do not let a keyword match stand in for a specific stated requirement.
+If a must-have is not supported by the candidate profile, call it out in reasoning
+and score it down accordingly. Do not reject the job outright — a low score is
+sufficient for the human reviewer to skip it.
+
 Return ONLY valid JSON (no prose, no markdown fences):
 
 {{
   "scores": {{
-    "AI Transformation Consultant": <0-100>,
-    "Technical Business Analyst": <0-100>,
-    "Implementation / FDE": <0-100>
+    "FDE / Solutions": <0-100>,
+    "Agentic AI": <0-100>,
+    "Technical Leadership": <0-100>
   }},
-  "best_category": "<the highest-scoring category>",
-  "best_score": <that category's score>,
+  "best_category": "<the highest-scoring family — exactly one of: FDE / Solutions, Agentic AI, Technical Leadership>",
+  "best_score": <that family's score>,
   "strong_matches": ["..."],
   "transferable_matches": ["..."],
   "gaps": ["..."],
@@ -60,6 +89,12 @@ Return ONLY valid JSON (no prose, no markdown fences):
   "reasoning": "<2-4 sentences a human can read in the Notion Score Reason field>"
 }}
 """
+
+MASTER_CV_FILES = [
+    ("Hamideh_Ahooei_Master_FDE_Solutions.md", "FDE / Solutions"),
+    ("Hamideh_Ahooei_Master_Agentic_AI.md", "Agentic AI"),
+    ("Hamideh_Ahooei_Master_Technical_Leadership.md", "Technical Leadership"),
+]
 
 
 def score(jd_extracted: dict, candidate_profile: str, calibration_notes: str = "") -> dict:
@@ -74,21 +109,19 @@ def score(jd_extracted: dict, candidate_profile: str, calibration_notes: str = "
     return json.loads(raw)
 
 
-def load_candidate_profile(profile_dir: Path) -> str:
-    """Concatenates the three base CVs (plain text/markdown files you place
-    in config/cvs/) into one profile block for the scorer. See README for
-    the expected filenames."""
+def load_candidate_profile(master_cv_dir: Path) -> str:
+    """Concatenates the three Master CVs into one profile block for the scorer.
+
+    master_cv_dir should be the folder containing the three canonical
+    Hamideh_Ahooei_Master_*.md files (typically CV_FOLDER_PATH/Master CVs).
+    """
     parts = []
-    for filename, category in [
-        ("ai_transformation_consultant.md", "AI Transformation Consultant"),
-        ("technical_business_analyst.md", "Technical Business Analyst"),
-        ("implementation_fde.md", "Implementation / FDE"),
-    ]:
-        path = profile_dir / filename
+    for filename, family in MASTER_CV_FILES:
+        path = master_cv_dir / filename
         if path.exists():
-            parts.append(f"--- {category} base CV ---\n{path.read_text()}")
+            parts.append(f"--- {family} Master CV ---\n{path.read_text()}")
         else:
-            parts.append(f"--- {category} base CV ---\n[missing: add {path}]")
+            parts.append(f"--- {family} Master CV ---\n[missing: {path}]")
     return "\n\n".join(parts)
 
 

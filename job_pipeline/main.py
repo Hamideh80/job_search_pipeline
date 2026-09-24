@@ -46,11 +46,15 @@ def _snapshot_db(run_id: str) -> None:
 def _load_run_context():
     """Load candidate profile, calibration notes, and applicant notes.
 
-    Kept as a helper so run / process / apply-approved all read from the
-    same config directory rather than duplicating the path logic.
+    The candidate profile is built from the three canonical Master CVs in
+    CV_FOLDER_PATH/Master CVs/. Falls back to config/cvs/ if CV_FOLDER_PATH
+    is not set (e.g. during tests without a real CV folder).
     """
+    import os
     from pipeline import apply as apply_module, scoring
-    profile = scoring.load_candidate_profile(CONFIG_DIR / "cvs")
+    cv_folder = os.environ.get("CV_FOLDER_PATH", "")
+    master_cv_dir = Path(cv_folder) / "Master CVs" if cv_folder else CONFIG_DIR / "cvs"
+    profile = scoring.load_candidate_profile(master_cv_dir)
     notes = scoring.load_calibration_notes(CONFIG_DIR / "calibration_notes.md")
     applicant_notes = apply_module.load_applicant_notes(CONFIG_DIR / "applicant_notes.md")
     return profile, notes, applicant_notes
@@ -190,17 +194,19 @@ _DISPLAY_STATUSES = [
     "discovered",
     "needs_jd",
     "extracted",
-    "scored",
+    "scored",                       # legacy intermediate (pre-Step-5)
     "skipped_low_score",
-    "shortlisted",
-    "approved",
+    "skipped_language_requirement", # French mandatory hard filter
+    "shortlisted",                  # score >= 70; Pending Review in Notion
+    "skipped_human",                # human set Skip in Notion
+    "approved",                     # human set Approved in Notion
     "tailored",
     "ready_to_apply",
     "applying",
     "applied",
     "apply_failed",
     "failed",
-    # legacy values written by pre-Step-2 code
+    # legacy values written by pre-Step-2/4 code
     "synced",
     "ready_to_submit",
 ]

@@ -6,6 +6,7 @@ Focus areas:
 3. Invalid / missing subcommand returns a non-zero exit code.
 4. `apply-approved` SQL gate never selects unapproved jobs.
 5. `apply-approved` SQL gate DOES select genuinely approved jobs.
+6. Gate requires pipeline_status='tailored' (not 'synced' — post-Step-5 flow).
 """
 import sys
 import subprocess
@@ -116,19 +117,19 @@ def test_no_subcommand_exits_nonzero():
 _APPLY_SOURCES = ("Greenhouse", "Ashby", "Lever")
 _APPLY_SQL = (
     "SELECT * FROM jobs "
-    "WHERE pipeline_status = 'synced' AND decision = 'approved' "
+    "WHERE pipeline_status = 'tailored' AND decision = 'approved' "
     f"AND source IN ({','.join('?' * len(_APPLY_SOURCES))})"
 )
 
 
 def test_apply_gate_excludes_unapproved():
-    """apply-approved must not select a synced job with no decision."""
+    """apply-approved must not select a tailored job with no decision."""
     import pipeline.db as db_mod
     conn = db_mod.connect(":memory:")
 
     _insert(conn, source="Greenhouse", link="https://a.com")
     conn.execute(
-        "UPDATE jobs SET pipeline_status='synced', decision=NULL WHERE company='Acme'"
+        "UPDATE jobs SET pipeline_status='tailored', decision=NULL WHERE company='Acme'"
     )
     conn.commit()
 
@@ -143,7 +144,7 @@ def test_apply_gate_excludes_skipped():
 
     _insert(conn, source="Greenhouse", link="https://a.com")
     conn.execute(
-        "UPDATE jobs SET pipeline_status='synced', decision='skipped' WHERE company='Acme'"
+        "UPDATE jobs SET pipeline_status='tailored', decision='skipped' WHERE company='Acme'"
     )
     conn.commit()
 
@@ -152,13 +153,13 @@ def test_apply_gate_excludes_skipped():
 
 
 def test_apply_gate_selects_approved():
-    """apply-approved DOES select a synced job with decision='approved'."""
+    """apply-approved DOES select a tailored+approved job."""
     import pipeline.db as db_mod
     conn = db_mod.connect(":memory:")
 
     _insert(conn, source="Greenhouse", link="https://a.com")
     conn.execute(
-        "UPDATE jobs SET pipeline_status='synced', decision='approved' WHERE company='Acme'"
+        "UPDATE jobs SET pipeline_status='tailored', decision='approved' WHERE company='Acme'"
     )
     conn.commit()
 
@@ -173,9 +174,24 @@ def test_apply_gate_excludes_non_ats_source():
 
     _insert(conn, source="LinkedIn", link="https://a.com")
     conn.execute(
-        "UPDATE jobs SET pipeline_status='synced', decision='approved' WHERE company='Acme'"
+        "UPDATE jobs SET pipeline_status='tailored', decision='approved' WHERE company='Acme'"
     )
     conn.commit()
 
     rows = conn.execute(_APPLY_SQL, _APPLY_SOURCES).fetchall()
     assert len(rows) == 0, "LinkedIn job was selected — it should stay manual"
+
+
+def test_apply_gate_excludes_shortlisted_not_yet_approved():
+    """A shortlisted job (pending human review) must never reach the apply gate."""
+    import pipeline.db as db_mod
+    conn = db_mod.connect(":memory:")
+
+    _insert(conn, source="Greenhouse", link="https://a.com")
+    conn.execute(
+        "UPDATE jobs SET pipeline_status='shortlisted', decision=NULL WHERE company='Acme'"
+    )
+    conn.commit()
+
+    rows = conn.execute(_APPLY_SQL, _APPLY_SOURCES).fetchall()
+    assert len(rows) == 0, "Shortlisted (unapproved) job was selected by the apply gate"

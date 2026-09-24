@@ -1,19 +1,27 @@
 """Ties discovery -> dedup -> extraction -> scoring -> Notion sync into one run.
 
-Run via `python main.py`. Safe to run repeatedly: dedup on JD hash means a
-re-run only processes what's new, and every stage only picks up jobs still
-sitting at the previous pipeline_status.
+Pipeline flow (post Step-5):
+  discovered
+  → extracted          (AI extraction; French-mandatory jobs hard-filtered here)
+  → shortlisted        (score >= 70; Notion card created for human review)
+    OR skipped_low_score  (score < 70; never shown to human)
+  → [human approves in Notion]
+  → approved           (poll_decisions advances shortlisted → approved)
+  → tailored           (Master CV tailored to specific JD; only after approval)
+  → ready_to_apply     (form filled + screenshot, dry-run when AUTO_SUBMIT_CONFIRMED=false)
+  → applied            (real submission when AUTO_SUBMIT_CONFIRMED=true)
 
-The pipeline DB (db.py, SQLite) is the only source of truth for processing
-state -- Notion is a one-way dashboard (see notion_sync.py's docstring),
-never read from for discovery. Broad discovery beyond companies.yaml and
-LinkedIn Gmail intake is expected to come from seed_discoveries.py (a
-separate local entry point a Claude scheduled task's web search hands
-results to) rather than from anything in this module -- see its docstring
-and the README section on the scheduled-task architecture.
+Safe to run repeatedly: dedup on JD hash means a re-run only processes
+what's new, and every stage only picks up jobs still sitting at the
+previous pipeline_status.
+
+The pipeline DB is the only source of truth for processing state —
+Notion is a one-way dashboard (see notion_sync.py), never read from
+for discovery.
 """
 import json
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +34,53 @@ from .progress import RunProgress
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 SCORE_THRESHOLD = 70
 
+# ── French mandatory-language hard filter ─────────────────────────────────────
+# Applied before any AI call in run_extraction. Hard-reject only when French
+# is clearly stated as required. "Preferred", "asset", "nice to have", or
+# ambiguous phrasing → allow through for normal scoring and human review.
+
+_FRENCH_MANDATORY_PATTERNS = [
+    r"french\s+(?:required|mandatory|essential|obligatoire)",
+    r"must\s+(?:speak|be\s+bilingual\s+in|have\s+(?:proficiency|fluency)\s+in)\s+french",
+    r"must\s+be\s+(?:proficient|fluent)\s+in\s+french",
+    r"bilingual\s+(?:french[/-]english|english[/-]french)\s+(?:required|mandatory|essential)",
+    r"(?:english\s+and\s+french|french\s+and\s+english)\s+(?:required|mandatory|essential|obligatoire)",
+    r"professional\s+(?:proficiency|fluency)\s+in\s+french.{0,40}?(?:required|mandatory|essential)",
+    r"fluent\s+(?:in\s+)?french.{0,40}?(?:required|mandatory|essential|is\s+required|is\s+mandatory)",
+    r"fran[cç]ais\s+(?:obligatoire|requis|exig[ée]e?)",
+]
+
+_FRENCH_MANDATORY_RE = re.compile(
+    "|".join(r"(?:" + p + r")" for p in _FRENCH_MANDATORY_PATTERNS),
+    re.IGNORECASE,
+)
+
+
+def _is_french_mandatory(jd_raw: str) -> bool:
+    return bool(_FRENCH_MANDATORY_RE.search(jd_raw or ""))
+
+
+# ── CV text loading (for answers + apply custom questions) ────────────────────
+
+_MASTER_CV_FILES = {
+    "FDE / Solutions":      "Hamideh_Ahooei_Master_FDE_Solutions.md",
+    "Agentic AI":           "Hamideh_Ahooei_Master_Agentic_AI.md",
+    "Technical Leadership": "Hamideh_Ahooei_Master_Technical_Leadership.md",
+}
+
+
+def _load_category_cv_text(category: str) -> str:
+    filename = _MASTER_CV_FILES.get(category)
+    if not filename:
+        return ""
+    cv_folder = os.environ.get("CV_FOLDER_PATH", "")
+    if not cv_folder:
+        return ""
+    path = Path(cv_folder) / "Master CVs" / filename
+    return path.read_text() if path.exists() else ""
+
+
+# ── discovery ─────────────────────────────────────────────────────────────────
 
 def load_watchlist() -> dict:
     path = CONFIG_DIR / "companies.yaml"
@@ -89,10 +144,7 @@ def _run_linkedin_intake(conn, label_name: str, progress: RunProgress) -> int:
 
 
 def insert_discovered_job(conn, posting: dict) -> int:
-    """Dedup-checked insert used by every discovery source (companies.yaml,
-    LinkedIn Gmail intake, and seed_discoveries.py for web-search results
-    handed off by a scheduled task). Returns 1 if it was new, 0 if this
-    exact company+title+JD text is already tracked."""
+    """Dedup-checked insert used by every discovery source. Returns 1 if new, 0 if duplicate."""
     jd_hash = db.hash_jd(posting["company"], posting["title"], posting["jd_raw"])
     if db.job_exists(conn, jd_hash):
         return 0
@@ -100,17 +152,28 @@ def insert_discovered_job(conn, posting: dict) -> int:
     return 1
 
 
+# ── extraction (with French hard filter) ─────────────────────────────────────
+
 def run_extraction(conn, progress: RunProgress) -> None:
     for row in db.jobs_by_status(conn, "discovered"):
+        # French mandatory-language hard filter — no AI call, no cost.
+        if _is_french_mandatory(row["jd_raw"] or ""):
+            db.update_job(conn, row["id"], pipeline_status="skipped_language_requirement")
+            progress.job_update(row["id"], row["title"], row["company"],
+                                "filtered", ok=False, extra="French mandatory — skipped")
+            continue
         try:
             extracted = extraction.extract(row["jd_raw"])
         except Exception as exc:  # noqa: BLE001
             progress.error(f"[extraction] job {row['id']} failed: {exc}")
-            progress.job_update(row["id"], row["title"], row["company"], "extracted", ok=False, extra=str(exc))
+            progress.job_update(row["id"], row["title"], row["company"],
+                                "extracted", ok=False, extra=str(exc))
             continue
         db.update_job(conn, row["id"], jd_extracted=extracted, pipeline_status="extracted")
         progress.job_update(row["id"], row["title"], row["company"], "extracted", ok=True)
 
+
+# ── scoring ───────────────────────────────────────────────────────────────────
 
 def run_scoring(conn, candidate_profile: str, calibration_notes: str,
                 progress: RunProgress) -> None:
@@ -120,10 +183,13 @@ def run_scoring(conn, candidate_profile: str, calibration_notes: str,
             result = scoring.score(jd_extracted, candidate_profile, calibration_notes)
         except Exception as exc:  # noqa: BLE001
             progress.error(f"[scoring] job {row['id']} failed: {exc}")
-            progress.job_update(row["id"], row["title"], row["company"], "scored", ok=False, extra=str(exc))
+            progress.job_update(row["id"], row["title"], row["company"],
+                                "scored", ok=False, extra=str(exc))
             continue
         best_score = result["best_score"]
-        new_status = "scored" if best_score >= SCORE_THRESHOLD else "skipped_low_score"
+        # score >= threshold → shortlisted for human review in Notion
+        # score < threshold  → skipped_low_score, never shown
+        new_status = "shortlisted" if best_score >= SCORE_THRESHOLD else "skipped_low_score"
         db.update_job(
             conn, row["id"],
             fit_score=best_score,
@@ -132,31 +198,23 @@ def run_scoring(conn, candidate_profile: str, calibration_notes: str,
             pipeline_status=new_status,
         )
         ok = best_score >= SCORE_THRESHOLD
-        extra = f"score = {best_score}" if ok else f"score = {best_score} (below threshold)"
-        progress.job_update(row["id"], row["title"], row["company"], "scored", ok=ok, extra=extra)
+        stage = "shortlisted" if ok else "skipped"
+        extra = f"score={best_score} → {result['best_category']}" if ok \
+            else f"score={best_score} (below threshold)"
+        progress.job_update(row["id"], row["title"], row["company"], stage, ok=ok, extra=extra)
 
 
-_CATEGORY_PROFILE_FILES = {
-    "AI Transformation Consultant": "ai_transformation_consultant.md",
-    "Technical Business Analyst": "technical_business_analyst.md",
-    "Implementation / FDE": "implementation_fde.md",
-}
-
-
-def _load_category_cv_text(category: str) -> str:
-    filename = _CATEGORY_PROFILE_FILES.get(category)
-    if not filename:
-        return ""
-    path = CONFIG_DIR / "cvs" / filename
-    return path.read_text() if path.exists() else ""
-
+# ── tailoring (only for approved jobs) ────────────────────────────────────────
 
 def run_tailoring(conn, cv_folder: Path, output_dir: Path, progress: RunProgress) -> None:
-    """Builds a tailored resume + drafted evergreen answers for every scored
-    job. Needs python-docx and (for the PDF) LibreOffice available wherever
-    this runs -- see README. If either step fails for a job, it's left at
-    'scored' so a later run retries it rather than silently dropping it."""
-    for row in db.jobs_by_status(conn, "scored"):
+    """Builds a tailored resume for every job the human has approved in Notion.
+
+    Tailoring runs ONLY on jobs in 'approved' status — meaning the human has
+    explicitly set Status = Approved in Notion and poll_decisions() has recorded
+    that decision. Shortlisted jobs that have not yet been reviewed are never
+    touched here.
+    """
+    for row in db.jobs_by_status(conn, "approved"):
         jd_extracted = json.loads(row["jd_extracted"])
         try:
             tailor_result = tailoring.build_tailored_resume(
@@ -170,7 +228,8 @@ def run_tailoring(conn, cv_folder: Path, output_dir: Path, progress: RunProgress
             )
         except Exception as exc:  # noqa: BLE001
             progress.error(f"[tailoring] job {row['id']} resume build failed: {exc}")
-            progress.job_update(row["id"], row["title"], row["company"], "tailored", ok=False, extra=str(exc))
+            progress.job_update(row["id"], row["title"], row["company"],
+                                "tailored", ok=False, extra=str(exc))
             continue
 
         cv_text = _load_category_cv_text(row["cv_category"])
@@ -193,27 +252,39 @@ def run_tailoring(conn, cv_folder: Path, output_dir: Path, progress: RunProgress
                             extra=str(tailor_result["docx_path"]))
 
 
+# ── Notion sync (shortlisted → Pending Review; poll for human decisions) ──────
+
 def run_notion_sync(conn, progress: RunProgress) -> None:
-    """Creates a Notion dashboard row for every tailored job, then polls for
-    Status changes (see notion_sync.py -- this is one-way except that one
-    field). Every job's Notion page is always brand-new here: with
-    notion_intake removed, the pipeline is the only thing that ever creates
-    a Job Tracker 2026 row, so there's nothing to update-in-place."""
+    """Creates a Notion dashboard row for every newly shortlisted job, then
+    polls for Status changes (Approved / Skip) and advances pipeline_status
+    accordingly.
+
+    Only shortlisted jobs without a Notion page yet are synced. No tailoring
+    data is available at this point — the human sees Company, Title, Link,
+    Fit Score, Score Reason, and which CV family was selected. That is
+    enough for an approve/skip decision.
+    """
     synced_ids: list[int] = []
-    for row in db.jobs_by_status(conn, "tailored"):
+    rows = conn.execute(
+        "SELECT * FROM jobs WHERE pipeline_status = 'shortlisted' AND notion_page_id IS NULL"
+    ).fetchall()
+    for row in rows:
         try:
             page_id = notion_sync.create_job_page(dict(row))
         except Exception as exc:  # noqa: BLE001
             progress.error(f"[sync] job {row['id']} Notion sync failed: {exc}")
-            progress.job_update(row["id"], row["title"], row["company"], "sync", ok=False, extra=str(exc))
+            progress.job_update(row["id"], row["title"], row["company"],
+                                "sync", ok=False, extra=str(exc))
             continue
-        db.update_job(conn, row["id"], notion_page_id=page_id, pipeline_status="synced")
+        # Status stays 'shortlisted' — we only record the Notion page id.
+        # poll_decisions() below will advance it to 'approved' or 'skipped_human'.
+        db.update_job(conn, row["id"], notion_page_id=page_id)
         progress.job_update(row["id"], row["title"], row["company"], "sync", ok=True)
         synced_ids.append(row["id"])
 
     notion_sync.poll_decisions(conn)
 
-    # Show approval status for jobs synced this run (read back after polling)
+    # Report decision status for jobs synced this run (read back after polling).
     if synced_ids:
         placeholders = ",".join("?" * len(synced_ids))
         rows = conn.execute(
@@ -231,11 +302,18 @@ _APPLY_SOURCES = ("Greenhouse", "Ashby", "Lever")
 def run_apply(conn, screenshot_dir: Path, progress: RunProgress,
               applicant_notes: str = "") -> None:
     """Fills (and, only with AUTO_SUBMIT_CONFIRMED=true, submits) applications
-    for jobs you've explicitly set to "Approved" in Notion. See the safety
-    notes at the top of pipeline/apply.py before enabling real submission.
-    Only acts on Greenhouse/Ashby/Lever jobs -- LinkedIn/Indeed stay manual."""
+    for jobs that are both tailored AND approved.
+
+    Safety guarantees:
+    - Only acts on jobs with pipeline_status='tailored' AND decision='approved'.
+    - Real submission only fires when AUTO_SUBMIT_CONFIRMED=true in .env;
+      otherwise fills the form and takes a screenshot for review.
+    - Only acts on Greenhouse/Ashby/Lever jobs — LinkedIn/Indeed stay manual.
+    - A job must have been approved by the human in Notion AND tailored before
+      any application is attempted.
+    """
     rows = conn.execute(
-        "SELECT * FROM jobs WHERE pipeline_status = 'synced' AND decision = 'approved' "
+        "SELECT * FROM jobs WHERE pipeline_status = 'tailored' AND decision = 'approved' "
         f"AND source IN ({','.join('?' * len(_APPLY_SOURCES))})",
         _APPLY_SOURCES,
     ).fetchall()
@@ -256,10 +334,11 @@ def run_apply(conn, screenshot_dir: Path, progress: RunProgress,
             )
         except Exception as exc:  # noqa: BLE001
             progress.error(f"[apply] job {row['id']} failed: {exc}")
-            progress.job_update(row["id"], row["title"], row["company"], "applied", ok=False, extra=str(exc))
+            progress.job_update(row["id"], row["title"], row["company"],
+                                "applied", ok=False, extra=str(exc))
             continue
 
-        new_status = "applied" if result["submitted"] else "ready_to_submit"
+        new_status = "applied" if result["submitted"] else "ready_to_apply"
         db.update_job(
             conn, row["id"],
             custom_answers=result["custom_answers"],
@@ -274,8 +353,8 @@ def run_apply(conn, screenshot_dir: Path, progress: RunProgress,
         else:
             flag_note = (f"{len(result['flags'])} field(s) need your input"
                          if result["flags"] else "dry-run screenshot saved")
-            progress.job_update(row["id"], row["title"], row["company"], "applied",
-                                ok=False, extra=flag_note)
+            progress.job_update(row["id"], row["title"], row["company"],
+                                "applied", ok=False, extra=flag_note)
 
 
 def run_all(candidate_profile: str, calibration_notes: str = "",
@@ -287,7 +366,7 @@ def run_all(candidate_profile: str, calibration_notes: str = "",
     screenshot_dir = Path(os.environ.get("APPLY_SCREENSHOT_DIR",
                                          CONFIG_DIR.parent / "data" / "screenshots"))
 
-    _p = progress  # caller owns the context-manager lifecycle
+    _p = progress
     try:
         _p.stage_start("discover")
         added = run_discovery(conn, _p)
@@ -305,7 +384,7 @@ def run_all(candidate_profile: str, calibration_notes: str = "",
         if cv_folder:
             run_tailoring(conn, cv_folder, output_dir, _p)
         else:
-            _p.info("CV_FOLDER_PATH not set — skipping tailoring, jobs stay at 'scored'")
+            _p.info("CV_FOLDER_PATH not set — skipping tailoring, approved jobs stay at 'approved'")
         _p.stage_done("tailor")
 
         _p.stage_start("sync")

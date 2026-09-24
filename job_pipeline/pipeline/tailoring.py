@@ -1,23 +1,22 @@
-"""Resume tailoring: edit an existing category-base .docx in place, in your
-own template styling, and export a PDF.
+"""Resume tailoring: edit a Master CV .docx in place and export a PDF.
 
-You already have three base CVs styled the way you want, one per category,
-sitting in your CV folder:
-  AI Transformation Consultant -> Hamideh_Ahooei_CV_AI_Transformation_Consultant.docx
-  Technical Business Analyst   -> Hamideh_Ahooei_CV_Technical_Business_Analyst.docx
-  Implementation / FDE         -> Hamideh_Ahooei_CV_Implementation_FDE.docx
+Tailoring only runs AFTER the human approves the job in Notion. The correct
+Master CV is selected by the cv_category assigned during scoring:
 
-Rather than rebuilding a document from a template (the old one-off method),
-tailoring here opens the matching base file, reworks the wording of the
-summary/skills/bullet paragraphs for the specific JD, and leaves every
-heading, date line, and contact line untouched -- so the visual template
-never has to be touched or rebuilt.
+  FDE / Solutions      -> Master CVs/Hamideh_Ahooei_Master_FDE_Solutions.docx
+  Agentic AI           -> Master CVs/Hamideh_Ahooei_Master_Agentic_AI.docx
+  Technical Leadership -> Master CVs/Hamideh_Ahooei_Master_Technical_Leadership.docx
 
-Honesty rules (from your CV-tailoring workflow notes) are enforced in the
-prompt, not just requested: only reword what's already true, never invent a
-technology/employer/title/metric that isn't in the base CV, keep OMID
-framed as part-time volunteer leadership, and don't reframe a prototype or
-personal initiative as production ML research.
+The Master DOCX files live inside CV_FOLDER_PATH/Master CVs/.
+
+Tailoring opens the matching base file, reworks summary/skills/bullet
+paragraphs for the specific JD, and leaves every heading, date line, and
+contact line untouched.
+
+Honesty rules are enforced in the prompt: only reword what's already true,
+never invent a technology/employer/title/metric that isn't in the Master CV,
+keep OMID framed as part-time volunteer leadership, and don't reframe a
+prototype or self-directed initiative as production ML research.
 """
 import json
 import re
@@ -27,9 +26,9 @@ from pathlib import Path
 from .ai import get_ai_client
 
 CATEGORY_CV_FILES = {
-    "AI Transformation Consultant": "Hamideh_Ahooei_CV_AI_Transformation_Consultant.docx",
-    "Technical Business Analyst": "Hamideh_Ahooei_CV_Technical_Business_Analyst.docx",
-    "Implementation / FDE": "Hamideh_Ahooei_CV_Implementation_FDE.docx",
+    "FDE / Solutions":      "Master CVs/Hamideh_Ahooei_Master_FDE_Solutions.docx",
+    "Agentic AI":           "Master CVs/Hamideh_Ahooei_Master_Agentic_AI.docx",
+    "Technical Leadership": "Master CVs/Hamideh_Ahooei_Master_Technical_Leadership.docx",
 }
 
 _DATE_LINE_RE = re.compile(r"\b(19|20)\d{2}\b.*(Present|\b(19|20)\d{2}\b)")
