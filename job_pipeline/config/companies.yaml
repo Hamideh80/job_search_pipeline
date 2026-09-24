@@ -27,3 +27,20 @@ lever:
 # Name of the Gmail label that collects your LinkedIn job-alert emails.
 # Leave blank/remove to skip LinkedIn intake.
 linkedin_gmail_label: "linkedin"
+
+# Broad keyword searches via LinkedIn's public guest API (no auth required).
+# Each entry runs one search. max_results defaults to 25 per query per run.
+# Target: Canada / remote-Canada / Montreal roles outside the company watchlist.
+linkedin_searches:
+  - keywords: "forward deployed engineer"
+    location: "Canada"
+  - keywords: "solutions architect AI"
+    location: "Canada"
+  - keywords: "applied AI engineer"
+    location: "Canada"
+  - keywords: "agentic AI engineer"
+    location: "Canada"
+  - keywords: "implementation consultant AI"
+    location: "Canada"
+  - keywords: "AI solutions engineer"
+    location: "Canada"

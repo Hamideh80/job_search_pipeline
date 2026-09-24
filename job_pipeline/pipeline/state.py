@@ -40,6 +40,9 @@ class JobStatus(str, Enum):
     APPLYING          = "applying"
     APPLIED           = "applied"
 
+    # ── relevance / pre-AI filter ─────────────────────────────────────────
+    SKIPPED_IRRELEVANT = "skipped_irrelevant"  # cheap filter before AI extraction
+
     # ── failure / recovery ────────────────────────────────────────────────
     APPLY_FAILED      = "apply_failed"
     FAILED            = "failed"
@@ -58,7 +61,8 @@ class JobStatus(str, Enum):
 TRANSITIONS: dict[str, frozenset] = {
     # ── main lifecycle ──────────────────────────────────────────────────
     "discovered":        frozenset({"extracted", "needs_jd", "failed",
-                                    "skipped_language_requirement"}),
+                                    "skipped_language_requirement",
+                                    "skipped_irrelevant"}),
     "needs_jd":          frozenset({"extracted", "failed"}),
     "extracted":         frozenset({"scored", "skipped_low_score", "failed",
                                     "shortlisted"}),  # scoring now goes directly to shortlisted
@@ -66,8 +70,9 @@ TRANSITIONS: dict[str, frozenset] = {
                              "shortlisted", "skipped_low_score", "failed",
                              "tailored",        # legacy branch: scored → tailored
                          }),
-    "skipped_low_score":          frozenset(),   # terminal
+    "skipped_low_score":           frozenset(),   # terminal
     "skipped_language_requirement": frozenset(), # terminal
+    "skipped_irrelevant":           frozenset(), # terminal — cheap pre-AI filter
     "shortlisted":       frozenset({
                              "approved", "skipped_human", "failed",
                              "tailored",        # legacy branch: shortlisted → tailored

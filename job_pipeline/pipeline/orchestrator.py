@@ -27,8 +27,8 @@ from typing import Optional
 
 import yaml
 
-from . import answers, apply as apply_module, db, extraction, notion_sync, scoring, tailoring
-from .discovery import ashby, gmail_linkedin, greenhouse, lever
+from . import answers, apply as apply_module, db, extraction, notion_sync, relevance, scoring, tailoring
+from .discovery import ashby, gmail_linkedin, greenhouse, lever, linkedin_search
 from .progress import RunProgress
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
@@ -105,7 +105,7 @@ def run_discovery(conn, progress: RunProgress) -> int:
         for token in watchlist.get(ats, []):
             try:
                 postings = fetch_fn(token)
-            except Exception as exc:  # noqa: BLE001 -- one bad company shouldn't kill the run
+            except Exception as exc:  # noqa: BLE001
                 progress.error(f"[discovery] {ats}/{token} failed: {exc}")
                 continue
             for posting in postings:
@@ -114,11 +114,15 @@ def run_discovery(conn, progress: RunProgress) -> int:
     if watchlist.get("linkedin_gmail_label"):
         new_count += _run_linkedin_intake(conn, watchlist["linkedin_gmail_label"], progress)
 
+    for cfg in watchlist.get("linkedin_searches", []):
+        new_count += _run_linkedin_search(conn, cfg, progress)
+
     progress.info(f"{new_count} new posting(s) found")
     return new_count
 
 
 def _run_linkedin_intake(conn, label_name: str, progress: RunProgress) -> int:
+    """Ingest jobs from LinkedIn alert emails; extracts title + company from JD page."""
     try:
         links = gmail_linkedin.fetch_job_links(label_name)
     except Exception as exc:  # noqa: BLE001
@@ -128,18 +132,36 @@ def _run_linkedin_intake(conn, label_name: str, progress: RunProgress) -> int:
     for link in links:
         if db.job_link_exists(conn, link):
             continue
-        jd_text = gmail_linkedin.fetch_jd_text(link)
-        if not jd_text:
-            progress.error(f"[discovery] could not fetch JD text for {link}, skipping")
+        job_data = gmail_linkedin.fetch_job_data(link)
+        if not job_data["jd_raw"]:
+            progress.error(f"[discovery] could not fetch JD for {link}, skipping")
             continue
         posting = {
-            "company": "Unknown (LinkedIn)",
-            "title": "Unknown (see JD)",
-            "link": link,
-            "jd_raw": jd_text,
-            "source": "LinkedIn",
+            "company": job_data["company"] or "Unknown (LinkedIn)",
+            "title":   job_data["title"]   or "Unknown (see JD)",
+            "link":    link,
+            "jd_raw":  job_data["jd_raw"],
+            "source":  "LinkedIn",
         }
         added += insert_discovered_job(conn, posting)
+    return added
+
+
+def _run_linkedin_search(conn, cfg: dict, progress: RunProgress) -> int:
+    """Run one keyword+location LinkedIn guest search and ingest results."""
+    keywords = cfg.get("keywords", "")
+    location = cfg.get("location", "Canada")
+    max_results = int(cfg.get("max_results", 25))
+    if not keywords:
+        return 0
+    try:
+        postings = linkedin_search.search_jobs(keywords, location, max_results)
+    except Exception as exc:  # noqa: BLE001
+        progress.error(f"[discovery] LinkedIn search '{keywords}' failed: {exc}")
+        return 0
+    added = sum(insert_discovered_job(conn, p) for p in postings)
+    if added:
+        progress.info(f"[discovery] LinkedIn search '{keywords}' → {added} new")
     return added
 
 
@@ -150,6 +172,33 @@ def insert_discovered_job(conn, posting: dict) -> int:
         return 0
     db.insert_job(conn, **posting)
     return 1
+
+
+# ── relevance filter (cheap, no AI) ──────────────────────────────────────────
+
+def run_relevance_filter(conn, progress: RunProgress) -> None:
+    """Apply the cheap two-gate relevance filter to all 'discovered' jobs.
+
+    Gate 1 — title blocklist: obvious non-target role functions.
+    Gate 2 — weighted title + JD signals: positive family evidence vs.
+              hard-negative function indicators.
+
+    Jobs that fail either gate are moved to 'skipped_irrelevant' with the
+    reason stored in relevance_skip_reason. Jobs that pass stay at
+    'discovered' and proceed to run_extraction().
+
+    Safe to re-run: only processes jobs still at 'discovered' status.
+    """
+    for row in db.jobs_by_status(conn, "discovered"):
+        title  = row["title"]  or ""
+        jd_raw = row["jd_raw"] or ""
+        ok, reason = relevance.is_relevant(title, jd_raw)
+        if not ok:
+            db.update_job(conn, row["id"],
+                          pipeline_status="skipped_irrelevant",
+                          relevance_skip_reason=reason)
+            progress.job_update(row["id"], title, row["company"],
+                                "relevance", ok=False, extra=reason[:80])
 
 
 # ── extraction (with French hard filter) ─────────────────────────────────────
@@ -371,6 +420,10 @@ def run_all(candidate_profile: str, calibration_notes: str = "",
         _p.stage_start("discover")
         added = run_discovery(conn, _p)
         _p.stage_done("discover", count=added)
+
+        _p.stage_start("filter")
+        run_relevance_filter(conn, _p)
+        _p.stage_done("filter")
 
         _p.stage_start("extract")
         run_extraction(conn, _p)

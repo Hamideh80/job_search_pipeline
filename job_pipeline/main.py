@@ -115,6 +115,10 @@ def cmd_process(args):
     with RunProgress(log_dir=DATA_DIR / "logs") as progress:
         conn = db.connect()
         try:
+            progress.stage_start("filter")
+            orchestrator.run_relevance_filter(conn, progress)
+            progress.stage_done("filter")
+
             progress.stage_start("extract")
             orchestrator.run_extraction(conn, progress)
             progress.stage_done("extract")
@@ -195,6 +199,7 @@ _DISPLAY_STATUSES = [
     "needs_jd",
     "extracted",
     "scored",                       # legacy intermediate (pre-Step-5)
+    "skipped_irrelevant",            # cheap relevance filter (no AI call)
     "skipped_low_score",
     "skipped_language_requirement", # French mandatory hard filter
     "shortlisted",                  # score >= 70; Pending Review in Notion

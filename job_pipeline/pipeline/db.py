@@ -96,6 +96,8 @@ _MIGRATION_COLUMNS: list[tuple[str, str]] = [
     # Step-2 additions
     ("source_job_id", "TEXT"),
     ("discovery_url",  "TEXT"),
+    # Step-7 additions
+    ("relevance_skip_reason", "TEXT"),  # populated when pipeline_status='skipped_irrelevant'
 ]
 
 
