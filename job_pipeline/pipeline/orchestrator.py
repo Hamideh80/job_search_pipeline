@@ -27,7 +27,7 @@ from typing import Optional
 
 import yaml
 
-from . import answers, apply as apply_module, db, extraction, notion_sync, relevance, scoring, tailoring
+from . import answers, apply as apply_module, db, extraction, job_status_check, notion_sync, relevance, scoring, tailoring
 from .discovery import ashby, gmail_linkedin, greenhouse, lever, linkedin_search
 from .progress import RunProgress
 
@@ -199,6 +199,29 @@ def run_relevance_filter(conn, progress: RunProgress) -> None:
                           relevance_skip_reason=reason)
             progress.job_update(row["id"], title, row["company"],
                                 "relevance", ok=False, extra=reason[:80])
+
+
+# ── availability check (no AI, runs before extraction) ───────────────────────
+
+def run_availability_check(conn, progress: RunProgress) -> None:
+    """Skip jobs that are no longer accepting applications.
+
+    Makes one HTTP request per discovered job. Jobs where the posting page
+    contains a closed-application notice (e.g. LinkedIn's 'No longer accepting
+    applications') are moved to 'skipped_closed' before any AI call is made.
+
+    Safe to re-run: only processes jobs still at 'discovered' status.
+    Network errors are treated as open so we never silently discard a real job.
+    """
+    for row in db.jobs_by_status(conn, "discovered"):
+        url = row["link"] or ""
+        if not url:
+            continue
+        if not job_status_check.is_job_open(url):
+            db.update_job(conn, row["id"], pipeline_status="skipped_closed")
+            progress.job_update(row["id"], row["title"], row["company"],
+                                "closed", ok=False,
+                                extra="no longer accepting applications")
 
 
 # ── extraction (with French hard filter) ─────────────────────────────────────
@@ -423,6 +446,7 @@ def run_all(candidate_profile: str, calibration_notes: str = "",
 
         _p.stage_start("filter")
         run_relevance_filter(conn, _p)
+        run_availability_check(conn, _p)
         _p.stage_done("filter")
 
         _p.stage_start("extract")
