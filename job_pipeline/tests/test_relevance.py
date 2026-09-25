@@ -251,6 +251,23 @@ def test_linkedin_unknown_title_fails_with_no_signals():
     assert not ok, f"Unknown title with generic JD should fail. Got: {reason}"
 
 
+# ── Regression: non-standard external title where JD body says "Solution Architect" ──
+
+def test_business_architect_ps_passes_via_jd_sol_arch():
+    """ID 84: Coveo posts 'Business Architect - PS' externally but the JD opens with
+    'As a Solution Architect on our Professional Services team'.  The jd_sol_arch
+    signal (+3) plus implementation (+3) and prof_services (+3) must reach threshold."""
+    title = "Business Architect - PS"
+    jd = (
+        "As a Solution Architect on our Professional Services team, you will be the "
+        "trusted technical advisor helping customers unlock the full power of our platform. "
+        "Lead solution design and implementation of our AI platform across customer digital "
+        "ecosystems. Deliver professional services projects from discovery to go-live."
+    )
+    ok, reason = is_relevant(title, jd)
+    assert ok, f"'Business Architect - PS' with SA JD body should pass: {reason}"
+
+
 # ── Talent-acquisition boilerplate does NOT block legitimate roles ────────────
 
 def test_talent_acquisition_boilerplate_does_not_block_solutions_role():

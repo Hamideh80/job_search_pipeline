@@ -163,6 +163,10 @@ _TITLE_MODERATE_RE = re.compile(
 _JD_POSITIVE: list[tuple[re.Pattern, str]] = [
     # FDE / Solutions signals
     (re.compile(r"\bforward[\s-]deployed\b", re.I),                       "fwd_deployed"),
+    # "solution(s) architect" in the JD body catches roles where the external
+    # title differs from the internal function (e.g. "Business Architect - PS"
+    # where the JD says "As a Solution Architect on our Professional Services team").
+    (re.compile(r"\bsolutions?\s+architect\b", re.I),                     "jd_sol_arch"),
     (re.compile(r"\bimplementation\b", re.I),                              "implementation"),
     (re.compile(r"\btechnical\s+(?:discovery|requirements?)\b", re.I),    "tech_discovery"),
     (re.compile(r"\bprofessional\s+services\b", re.I),                    "prof_services"),
