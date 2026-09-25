@@ -43,12 +43,22 @@ JD_HEADERS = {
         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
     )
 }
-_LOGIN_MARKERS = ("Sign in", "Join now", "authwall", "checkpoint/lg")
+# True auth-wall indicators. "Sign in" and "Join now" appear on ALL LinkedIn
+# pages (nav buttons) and must NOT be used as block markers.
+_LOGIN_MARKERS = ("authwall", "checkpoint/lg")
 
 # Metadata extraction from LinkedIn HTML pages
-_JSONLD_RE    = re.compile(r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', re.DOTALL | re.IGNORECASE)
-_H1_TITLE_RE  = re.compile(r'<h1[^>]*class="[^"]*top-card[^"]*"[^>]*>\s*([^<]{3,120}?)\s*</h1>', re.IGNORECASE)
+_JSONLD_RE     = re.compile(r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', re.DOTALL | re.IGNORECASE)
 _PAGE_TITLE_RE = re.compile(r'<title[^>]*>([^<]+)</title>', re.IGNORECASE)
+# Guest job-detail API fragment selectors (no <title> tag in the fragment)
+_GUEST_TITLE_RE = re.compile(
+    r'<h[12][^>]*top-card-layout__title[^>]*>\s*([^<]{3,200}?)\s*</h[12]>',
+    re.IGNORECASE,
+)
+_GUEST_COMPANY_RE = re.compile(
+    r'<a[^>]*topcard__org-name-link[^>]*>\s*([^<]{2,120}?)\s*</a>',
+    re.IGNORECASE,
+)
 
 
 def _get_service():
@@ -149,8 +159,12 @@ def _fetch_raw_html(job_link: str) -> str | None:
 def _extract_metadata(html: str) -> tuple[str | None, str | None]:
     """Extract (title, company) from LinkedIn job page HTML.
 
-    Tries JSON-LD structured data first (most reliable), then falls back
-    to the <title> page element.
+    Three attempts in order:
+    1. JSON-LD structured data (full public job pages)
+    2. <title> page element (full public job pages)
+    3. Guest job-detail API fragment selectors (h2.top-card-layout__title,
+       a.topcard__org-name-link) — the guest API returns a snippet with no
+       <title> or JSON-LD, but with these dedicated CSS classes.
     """
     import json as _json
 
@@ -166,17 +180,22 @@ def _extract_metadata(html: str) -> tuple[str | None, str | None]:
         except (ValueError, KeyError):
             continue
 
-    # Fallback: page <title> looks like "Job Title at Company | LinkedIn"
+    # Full-page fallback: <title> looks like "Job Title at Company | LinkedIn"
     m = _PAGE_TITLE_RE.search(html)
     if m:
         raw = m.group(1).strip()
-        # Strip trailing " | LinkedIn" suffix
         raw = re.sub(r"\s*\|\s*LinkedIn\s*$", "", raw, flags=re.IGNORECASE)
-        # Split "Title at Company" or "Title - Company"
         parts = re.split(r"\s+(?:at|[-–])\s+", raw, maxsplit=1)
         title   = _clean(parts[0]) if parts else None
         company = _clean(parts[1]) if len(parts) > 1 else None
-        return title, company
+        if title:
+            return title, company
+
+    # Guest API fragment fallback: dedicated CSS class selectors
+    tm = _GUEST_TITLE_RE.search(html)
+    cm = _GUEST_COMPANY_RE.search(html)
+    if tm:
+        return _clean(tm.group(1)), (_clean(cm.group(1)) if cm else None)
 
     return None, None
 
