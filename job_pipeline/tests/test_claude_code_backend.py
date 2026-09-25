@@ -218,6 +218,30 @@ def test_claude_code_backend_no_api_key(monkeypatch):
     assert result == '{"ok": true}'
 
 
+# ── UTF-8 encoding ───────────────────────────────────────────────────────────
+
+def test_subprocess_uses_utf8_encoding():
+    """subprocess.run must be called with encoding='utf-8'.
+
+    Without this, Windows uses cp1252 by default, which cannot encode emoji
+    or other non-ASCII characters that appear in real job descriptions.
+    """
+    backend = _backend()
+    emoji_prompt = "Rate this JD: 🚀 AI engineer needed 🤖"
+    emoji_response = '{"score": 85, "note": "great role 🎯"}'
+
+    with patch("subprocess.run", return_value=_make_result(emoji_response)) as mock_run:
+        result = backend.complete(emoji_prompt, max_tokens=200, purpose="scoring")
+
+    assert result == emoji_response
+    _, kwargs = mock_run.call_args
+    assert kwargs.get("encoding") == "utf-8", (
+        "ClaudeCodeBackend must pass encoding='utf-8' to subprocess.run — "
+        "Windows default (cp1252) cannot handle emoji in JD text"
+    )
+    assert kwargs.get("input") == emoji_prompt
+
+
 # ── CLI flags ─────────────────────────────────────────────────────────────────
 
 def test_cli_uses_print_flag():

@@ -192,6 +192,7 @@ class ClaudeCodeBackend(AIClient):
                 input=prompt,           # prompt via stdin (no arg-length limits)
                 capture_output=True,
                 text=True,
+                encoding="utf-8",       # explicit UTF-8 — Windows default is cp1252
                 timeout=self._timeout,
                 env=self._child_env(),
                 # shell=False is the default — no shell expansion, no injection risk

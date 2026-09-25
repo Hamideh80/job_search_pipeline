@@ -15,6 +15,7 @@ from rich.progress import (
 
 _STAGES = [
     ("discover", "DISCOVER    — pulling job postings from companies.yaml + Gmail"),
+    ("filter",   "FILTER      — cheap relevance filter (no AI call)"),
     ("extract",  "EXTRACT     — structuring job descriptions with Claude"),
     ("score",    "SCORE       — evaluating fit and selecting CV profile"),
     ("tailor",   "TAILOR      — building tailored resumes and drafting answers"),
@@ -64,8 +65,9 @@ class RunProgress:
     def stage_start(self, stage: str) -> None:
         idx = _STAGE_NAMES.index(stage)
         label = _STAGE_LABELS[stage]
-        self._bar.update(self._task, description=f"[{idx + 1}/6] {label}")
-        self._console.rule(f"[bold][{idx + 1}/6] {label}")
+        n = len(_STAGES)
+        self._bar.update(self._task, description=f"[{idx + 1}/{n}] {label}")
+        self._console.rule(f"[bold][{idx + 1}/{n}] {label}")
         self.logger.info("Stage start: %s", stage)
 
     def stage_done(self, stage: str, *, count: int = 0, note: str = "") -> None:
