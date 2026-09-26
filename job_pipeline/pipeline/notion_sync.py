@@ -87,6 +87,8 @@ def create_job_page(job: dict) -> str:
         "Applied Via": {"select": {"name": "N/A"}},
         "Date Added": {"date": {"start": date.today().isoformat()}},
     }
+    if job.get("id") is not None:
+        props["Job ID"] = {"number": job["id"]}
     if job.get("link"):
         props["Link"] = {"url": job["link"]}
     if job.get("fit_score") is not None:
@@ -139,6 +141,26 @@ def mark_applied(page_id: str, applied_via: str = "Auto") -> None:
 def fetch_status(page_id: str) -> list[str]:
     page = _notion().pages.retrieve(page_id=page_id)
     return [opt["name"] for opt in page["properties"]["Status"]["multi_select"]]
+
+
+def backfill_job_ids(conn) -> int:
+    """Write the pipeline DB id into the 'Job ID' Notion property for every
+    synced job that already has a notion_page_id. Safe to re-run — Notion
+    update is idempotent. Returns the number of pages updated."""
+    rows = conn.execute(
+        "SELECT id, notion_page_id FROM jobs WHERE notion_page_id IS NOT NULL"
+    ).fetchall()
+    updated = 0
+    for row in rows:
+        try:
+            _notion().pages.update(
+                row["notion_page_id"],
+                properties={"Job ID": {"number": row["id"]}},
+            )
+            updated += 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"[backfill] job {row['id']} failed: {exc}")
+    return updated
 
 
 def poll_decisions(conn) -> None:

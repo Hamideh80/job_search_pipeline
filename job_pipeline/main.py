@@ -170,6 +170,18 @@ def cmd_apply_approved(args):
             conn.close()
 
 
+def cmd_backfill_notion_ids(args):
+    """Write the pipeline DB id into the 'Job ID' Notion column for all synced jobs."""
+    from pipeline import db, notion_sync
+
+    conn = db.connect()
+    try:
+        n = notion_sync.backfill_job_ids(conn)
+        print(f"[backfill] updated {n} Notion page(s) with Job ID.")
+    finally:
+        conn.close()
+
+
 def cmd_learn(args):
     """Regenerate calibration notes from the full decision history (phase 6).
 
@@ -290,23 +302,25 @@ commands:
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>", required=True)
 
-    sub.add_parser("run",            help="Full pipeline pass")
-    sub.add_parser("discover",       help="Discover new job postings")
-    sub.add_parser("process",        help="Extract, score, tailor, sync to Notion")
-    sub.add_parser("apply-approved", help="Apply to Notion-approved jobs only (safety-gated)")
-    sub.add_parser("learn",          help="Regenerate calibration notes from decision history")
-    sub.add_parser("status",         help="Read-only DB summary (no API key required)")
+    sub.add_parser("run",                 help="Full pipeline pass")
+    sub.add_parser("discover",            help="Discover new job postings")
+    sub.add_parser("process",            help="Extract, score, tailor, sync to Notion")
+    sub.add_parser("apply-approved",     help="Apply to Notion-approved jobs only (safety-gated)")
+    sub.add_parser("learn",              help="Regenerate calibration notes from decision history")
+    sub.add_parser("status",             help="Read-only DB summary (no API key required)")
+    sub.add_parser("backfill-notion-ids", help="Write DB id into Notion Job ID column for all synced jobs")
 
     return parser
 
 
 _HANDLERS: dict = {
-    "run":            cmd_run,
-    "discover":       cmd_discover,
-    "process":        cmd_process,
-    "apply-approved": cmd_apply_approved,
-    "learn":          cmd_learn,
-    "status":         cmd_status,
+    "run":                 cmd_run,
+    "discover":            cmd_discover,
+    "process":             cmd_process,
+    "apply-approved":      cmd_apply_approved,
+    "learn":               cmd_learn,
+    "status":              cmd_status,
+    "backfill-notion-ids": cmd_backfill_notion_ids,
 }
 
 
