@@ -95,10 +95,18 @@ def set_paragraph_text(paragraph, new_text: str) -> None:
     if not runs:
         return
     keep = 0
+    label = ""
     if runs[0].bold and runs[0].text.strip().endswith(":"):
         keep = 1
+        label = runs[0].text.strip()
         if len(runs) > 1 and runs[1].text.strip() == "":
             keep = 2
+    # Strip label prefix if the AI echoed it back in new_text.
+    if label:
+        for prefix in (label + " ", label):
+            if new_text.startswith(prefix):
+                new_text = new_text[len(prefix):]
+                break
     for r in runs[keep:-1] if keep < len(runs) - 1 else []:
         r.text = ""
     if keep < len(runs):
