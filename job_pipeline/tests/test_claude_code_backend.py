@@ -28,6 +28,17 @@ def _make_result(stdout: str, returncode: int = 0, stderr: str = "") -> MagicMoc
     return r
 
 
+def _json_stdout(text: str, in_tokens: int = 50, out_tokens: int = 20) -> str:
+    """Build the JSON envelope that --output-format json produces."""
+    import json
+    return json.dumps({
+        "type": "result",
+        "subtype": "success",
+        "result": text,
+        "usage": {"input_tokens": in_tokens, "output_tokens": out_tokens},
+    })
+
+
 def _backend() -> ClaudeCodeBackend:
     b = ClaudeCodeBackend()
     b._cli = "claude"          # skip PATH search in tests
@@ -37,9 +48,10 @@ def _backend() -> ClaudeCodeBackend:
 # ── success ───────────────────────────────────────────────────────────────────
 
 def test_success_returns_stripped_text():
-    """complete() returns stdout.strip() on success."""
+    """complete() returns the result field (stripped) from the JSON envelope."""
     backend = _backend()
-    with patch("subprocess.run", return_value=_make_result('  {"key": 1}\n')) as mock_run:
+    with patch("subprocess.run",
+               return_value=_make_result(_json_stdout('  {"key": 1}  '))) as mock_run:
         result = backend.complete("some prompt", max_tokens=100, purpose="extraction")
 
     assert result == '{"key": 1}'
@@ -213,7 +225,7 @@ def test_claude_code_backend_no_api_key(monkeypatch):
     """ClaudeCodeBackend.complete() must succeed without ANTHROPIC_API_KEY set."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     backend = _backend()
-    with patch("subprocess.run", return_value=_make_result('{"ok": true}')):
+    with patch("subprocess.run", return_value=_make_result(_json_stdout('{"ok": true}'))):
         result = backend.complete("p", max_tokens=10)
     assert result == '{"ok": true}'
 
@@ -230,7 +242,8 @@ def test_subprocess_uses_utf8_encoding():
     emoji_prompt = "Rate this JD: 🚀 AI engineer needed 🤖"
     emoji_response = '{"score": 85, "note": "great role 🎯"}'
 
-    with patch("subprocess.run", return_value=_make_result(emoji_response)) as mock_run:
+    with patch("subprocess.run",
+               return_value=_make_result(_json_stdout(emoji_response))) as mock_run:
         result = backend.complete(emoji_prompt, max_tokens=200, purpose="scoring")
 
     assert result == emoji_response
@@ -253,15 +266,15 @@ def test_cli_uses_print_flag():
     assert "-p" in cmd or "--print" in cmd
 
 
-def test_cli_uses_text_output_format():
-    """--output-format text must be used (avoids JSON envelope)."""
+def test_cli_uses_json_output_format():
+    """--output-format json must be used to get the usage/token envelope."""
     backend = _backend()
     with patch("subprocess.run", return_value=_make_result("ok")) as mock_run:
         backend.complete("p", max_tokens=10)
     cmd = mock_run.call_args[0][0]
     assert "--output-format" in cmd
     idx = cmd.index("--output-format")
-    assert cmd[idx + 1] == "text"
+    assert cmd[idx + 1] == "json"
 
 
 def test_cli_no_session_persistence():

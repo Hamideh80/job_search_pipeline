@@ -52,7 +52,7 @@ def search_jobs(keywords: str, location: str, max_results: int = 25) -> list[dic
             "title":   data["title"]   or "Unknown (see JD)",
             "link":    link,
             "jd_raw":  data["jd_raw"],
-            "source":  "LinkedIn",
+            "source":  "LinkedIn Search",
         })
     return postings
 

@@ -34,6 +34,10 @@ from .progress import RunProgress
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 SCORE_THRESHOLD = 70
 
+# Cap how many jobs each AI stage processes per run to avoid rate-limit bursts.
+# Override with MAX_JOBS_PER_RUN=50 in .env (set to 0 for unlimited).
+_MAX_JOBS_PER_RUN = int(os.environ.get("MAX_JOBS_PER_RUN", "20"))
+
 # ── French mandatory-language hard filter ─────────────────────────────────────
 # Applied before any AI call in run_extraction. Hard-reject only when French
 # is clearly stated as required. "Preferred", "asset", "nice to have", or
@@ -141,7 +145,7 @@ def _run_linkedin_intake(conn, label_name: str, progress: RunProgress) -> int:
             "title":   job_data["title"]   or "Unknown (see JD)",
             "link":    link,
             "jd_raw":  job_data["jd_raw"],
-            "source":  "LinkedIn",
+            "source":  "LinkedIn Gmail",
         }
         added += insert_discovered_job(conn, posting)
     return added
@@ -227,7 +231,10 @@ def run_availability_check(conn, progress: RunProgress) -> None:
 # ── extraction (with French hard filter) ─────────────────────────────────────
 
 def run_extraction(conn, progress: RunProgress) -> None:
-    for row in db.jobs_by_status(conn, "discovered"):
+    rows = db.jobs_by_status(conn, "discovered")
+    if _MAX_JOBS_PER_RUN:
+        rows = rows[:_MAX_JOBS_PER_RUN]
+    for row in rows:
         # French mandatory-language hard filter — no AI call, no cost.
         if _is_french_mandatory(row["jd_raw"] or ""):
             db.update_job(conn, row["id"], pipeline_status="skipped_language_requirement")
@@ -249,7 +256,10 @@ def run_extraction(conn, progress: RunProgress) -> None:
 
 def run_scoring(conn, candidate_profile: str, calibration_notes: str,
                 progress: RunProgress) -> None:
-    for row in db.jobs_by_status(conn, "extracted"):
+    rows = db.jobs_by_status(conn, "extracted")
+    if _MAX_JOBS_PER_RUN:
+        rows = rows[:_MAX_JOBS_PER_RUN]
+    for row in rows:
         jd_extracted = json.loads(row["jd_extracted"])
         try:
             result = scoring.score(jd_extracted, candidate_profile, calibration_notes)
@@ -438,38 +448,50 @@ def run_all(candidate_profile: str, calibration_notes: str = "",
     screenshot_dir = Path(os.environ.get("APPLY_SCREENSHOT_DIR",
                                          CONFIG_DIR.parent / "data" / "screenshots"))
 
+    def _count(status: str) -> int:
+        return conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE pipeline_status = ?", (status,)
+        ).fetchone()[0]
+
     _p = progress
     try:
-        _p.stage_start("discover")
+        _p.stage_start("discover", pending=_count("discovered"))
         added = run_discovery(conn, _p)
         _p.stage_done("discover", count=added)
 
-        _p.stage_start("filter")
+        _p.stage_start("filter", pending=_count("discovered"))
         run_relevance_filter(conn, _p)
         run_availability_check(conn, _p)
-        _p.stage_done("filter")
+        _p.stage_done("filter", count=_count("discovered"),
+                       note="passed relevance + availability")
 
-        _p.stage_start("extract")
+        _p.stage_start("extract", pending=_count("discovered"))
         run_extraction(conn, _p)
-        _p.stage_done("extract")
+        _p.stage_done("extract", count=_count("extracted"))
 
-        _p.stage_start("score")
+        _p.stage_start("score", pending=_count("extracted"))
         run_scoring(conn, candidate_profile, calibration_notes, _p)
-        _p.stage_done("score")
+        _p.stage_done("score", count=_count("shortlisted"), note="shortlisted")
 
-        _p.stage_start("tailor")
+        _p.stage_start("tailor", pending=_count("approved"))
         if cv_folder:
             run_tailoring(conn, cv_folder, output_dir, _p)
         else:
             _p.info("CV_FOLDER_PATH not set — skipping tailoring, approved jobs stay at 'approved'")
-        _p.stage_done("tailor")
+        _p.stage_done("tailor", count=_count("tailored"))
 
-        _p.stage_start("sync")
+        _p.stage_start("sync", pending=conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE pipeline_status='shortlisted'"
+            " AND notion_page_id IS NULL"
+        ).fetchone()[0])
         run_notion_sync(conn, _p)
-        _p.stage_done("sync")
+        _p.stage_done("sync", count=_count("shortlisted"))
 
-        _p.stage_start("apply")
+        _p.stage_start("apply", pending=conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE pipeline_status='tailored'"
+            " AND decision='approved'"
+        ).fetchone()[0])
         run_apply(conn, screenshot_dir, _p, applicant_notes)
-        _p.stage_done("apply")
+        _p.stage_done("apply", count=_count("applied"))
     finally:
         conn.close()

@@ -27,9 +27,11 @@ Injecting a fake backend for tests
     # ... run tests ...
     set_ai_client(None)   # resets to default on next get_ai_client() call
 """
+import json as _json
 import os
 import subprocess
 import sys
+import time
 from typing import Optional
 
 
@@ -94,13 +96,29 @@ class AnthropicAPIBackend(AIClient):
         max_tokens: int,
         purpose: Optional[str] = None,
     ) -> str:
+        from anthropic import RateLimitError
         client = self._ensure_client()
-        message = client.messages.create(
-            model=self._model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return message.content[0].text.strip()
+        wait = 30  # seconds before first retry
+        for attempt in range(5):
+            try:
+                message = client.messages.create(
+                    model=self._model,
+                    max_tokens=max_tokens,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                output = message.content[0].text.strip()
+                if _llm_log_handler is not None:
+                    _llm_log_handler(purpose or "unknown", prompt,
+                                     message.usage.input_tokens,
+                                     message.usage.output_tokens)
+                return output
+            except RateLimitError:
+                if attempt == 4:
+                    raise
+                print(f"[ai] rate-limited (attempt {attempt + 1}/5), retrying in {wait}s…",
+                      flush=True)
+                time.sleep(wait)
+                wait = min(wait * 2, 300)
 
 
 # ── Claude Code CLI backend ───────────────────────────────────────────────────
@@ -180,7 +198,7 @@ class ClaudeCodeBackend(AIClient):
         cmd = [
             cli,
             "-p",                        # non-interactive / print mode
-            "--output-format", "text",   # plain text stdout (no JSON envelope)
+            "--output-format", "json",   # JSON envelope includes usage/token counts
             "--no-session-persistence",  # don't bleed state between calls
             "--model", self._model,
         ]
@@ -216,13 +234,32 @@ class ClaudeCodeBackend(AIClient):
                 f"stderr={stderr_snip!r} stdout={stdout_snip!r}"
             )
 
-        output = result.stdout.strip()
-        if not output:
+        raw = result.stdout.strip()
+        if not raw:
             raise RuntimeError(
                 f"{label} CLI returned empty output (exit 0). "
                 f"stderr={result.stderr.strip()[:200]!r}"
             )
 
+        try:
+            data = _json.loads(raw)
+            output = data.get("result", "").strip()
+            usage = data.get("usage", {})
+            in_tok = usage.get("input_tokens")
+            out_tok = usage.get("output_tokens")
+        except (_json.JSONDecodeError, AttributeError):
+            output = raw
+            in_tok = None
+            out_tok = None
+
+        if not output:
+            raise RuntimeError(
+                f"{label} CLI returned empty result field. "
+                f"stderr={result.stderr.strip()[:200]!r}"
+            )
+
+        if _llm_log_handler is not None:
+            _llm_log_handler(purpose or "unknown", prompt, in_tok, out_tok)
         return output
 
 
@@ -264,6 +301,21 @@ class FakeAIBackend(AIClient):
         return self._responses.get("default", "{}")
 
 
+# ── LLM call logging ─────────────────────────────────────────────────────────
+
+_llm_log_handler = None
+
+
+def set_llm_log_handler(fn) -> None:
+    """Register a callback invoked after every successful LLM call.
+
+    fn(purpose, prompt, input_tokens, output_tokens) — token counts are None
+    for ClaudeCodeBackend which doesn't expose them.  Pass None to clear.
+    """
+    global _llm_log_handler
+    _llm_log_handler = fn
+
+
 # ── singleton management ──────────────────────────────────────────────────────
 
 _default: Optional[AIClient] = None
@@ -293,6 +345,7 @@ def set_ai_client(client: Optional[AIClient]) -> None:
 def _build_backend(name: Optional[str] = None) -> AIClient:
     """Instantiate the backend named by *name* (or AI_BACKEND env var)."""
     backend = (name or os.environ.get("AI_BACKEND", "anthropic")).lower().strip()
+    print(f"[ai] backend: {backend}", flush=True)
     if backend == "anthropic":
         return AnthropicAPIBackend()
     if backend == "claude_code":

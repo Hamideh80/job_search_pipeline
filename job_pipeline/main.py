@@ -71,6 +71,10 @@ def cmd_run(args):
     from pipeline import orchestrator
     from pipeline.progress import RunProgress
 
+    if getattr(args, "debug", False):
+        orchestrator._MAX_JOBS_PER_RUN = 5
+        print("[debug] Debug mode active — capped at 5 jobs per AI stage", flush=True)
+
     profile, notes, applicant_notes = _load_run_context()
 
     with RunProgress(log_dir=DATA_DIR / "logs") as progress:
@@ -107,6 +111,10 @@ def cmd_process(args):
     import os
     from pipeline import db, orchestrator
     from pipeline.progress import RunProgress
+
+    if getattr(args, "debug", False):
+        orchestrator._MAX_JOBS_PER_RUN = 5
+        print("[debug] Debug mode active — capped at 5 jobs per AI stage", flush=True)
 
     profile, notes, _ = _load_run_context()
     cv_folder = Path(os.environ["CV_FOLDER_PATH"]) if os.environ.get("CV_FOLDER_PATH") else None
@@ -293,8 +301,10 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="""\
 commands:
   run             Full pipeline pass (discover + process + apply-approved)
+  run --debug     Debug run: caps extraction and scoring at 5 jobs
   discover        Pull new postings from ATS APIs and LinkedIn Gmail
   process         Extract, score, tailor, sync to Notion
+  process --debug Debug process: caps extraction and scoring at 5 jobs
   apply-approved  Submit applications for Notion-approved jobs (safety-gated)
   learn           Regenerate calibration notes from decision history
   status          Read-only DB summary — no API key required
@@ -302,9 +312,16 @@ commands:
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>", required=True)
 
-    sub.add_parser("run",                 help="Full pipeline pass")
+    run_p = sub.add_parser("run", help="Full pipeline pass")
+    run_p.add_argument("--debug", action="store_true",
+                       help="Debug mode: cap extraction and scoring at 5 jobs")
+
     sub.add_parser("discover",            help="Discover new job postings")
-    sub.add_parser("process",            help="Extract, score, tailor, sync to Notion")
+
+    proc_p = sub.add_parser("process",    help="Extract, score, tailor, sync to Notion")
+    proc_p.add_argument("--debug", action="store_true",
+                        help="Debug mode: cap extraction and scoring at 5 jobs")
+
     sub.add_parser("apply-approved",     help="Apply to Notion-approved jobs only (safety-gated)")
     sub.add_parser("learn",              help="Regenerate calibration notes from decision history")
     sub.add_parser("status",             help="Read-only DB summary (no API key required)")

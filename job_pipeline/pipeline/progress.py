@@ -62,18 +62,21 @@ class RunProgress:
 
     # ── stage lifecycle ──────────────────────────────────────────────────────
 
-    def stage_start(self, stage: str) -> None:
+    def stage_start(self, stage: str, *, pending: int = 0) -> None:
         idx = _STAGE_NAMES.index(stage)
         label = _STAGE_LABELS[stage]
         n = len(_STAGES)
         self._bar.update(self._task, description=f"[{idx + 1}/{n}] {label}")
         self._console.rule(f"[bold][{idx + 1}/{n}] {label}")
-        self.logger.info("Stage start: %s", stage)
+        if pending:
+            self._console.print(f"  [dim]{pending} job(s) pending[/dim]")
+        self.logger.info("Stage start: %s (%d pending)", stage, pending)
 
     def stage_done(self, stage: str, *, count: int = 0, note: str = "") -> None:
         self._bar.advance(self._task)
         extra = f" ({note})" if note else ""
         self.logger.info("Stage done: %s — %d job(s)%s", stage, count, extra)
+        self._console.print(f"  [bold green]✓[/bold green]  {count} job(s) processed{extra}")
 
     # ── per-job reporting ────────────────────────────────────────────────────
 
@@ -93,6 +96,14 @@ class RunProgress:
         self._console.print(
             f"  Job [bold]{job_id}[/bold]  {title[:42]:<42}  {stage:<12} {mark_rich}{extra_str}"
         )
+
+    def llm_call(self, purpose: str, prompt: str,
+                 in_tokens: int | None, out_tokens: int | None) -> None:
+        tok = (f"in={in_tokens} / out={out_tokens} tokens"
+               if in_tokens is not None else "tokens=N/A (CLI backend)")
+        self._console.print(f"  [yellow]⚙ LLM[/yellow]  {purpose}  {tok}")
+        self.logger.info("[LLM] %s | %s | prompt_chars=%d", purpose, tok, len(prompt))
+        self.logger.debug("[LLM] %s | full prompt:\n%s", purpose, prompt)
 
     def info(self, msg: str) -> None:
         self.logger.info(msg)
@@ -123,9 +134,13 @@ class RunProgress:
 
     def __enter__(self) -> "RunProgress":
         self._bar.start()
+        from . import ai as _ai
+        _ai.set_llm_log_handler(self.llm_call)
         return self
 
     def __exit__(self, exc_type, *_) -> None:
+        from . import ai as _ai
+        _ai.set_llm_log_handler(None)
         self._bar.stop()
         self.print_summary()
         if exc_type:
