@@ -1,7 +1,7 @@
 """Fit scoring against the candidate's combined Master CV.
 
-Each job is scored on a 0-100 scale. Score >= SCORE_THRESHOLD (70) →
-shortlisted in Notion for human review. Score < 70 → skipped_low_score.
+Each job is scored on a 0-100 scale. Score >= SCORE_THRESHOLD (50) →
+shortlisted in Notion for human review. Score < 50 → skipped_low_score.
 
 Tailoring only happens AFTER the human approves in Notion.
 """
@@ -33,6 +33,12 @@ resident with a clean background) — NOT that they must already hold it. Do NOT
 for lacking an active clearance when the JD uses "eligible for" or "eligibility for".
 Only treat clearance as a gap if the JD explicitly states it must already be active,
 in-progress, or currently held.
+
+CANADIAN LOCATION: Do NOT treat location as a gap for hybrid or remote roles anywhere
+in Canada (Toronto, Ottawa, Vancouver, Calgary, etc.). A Canadian candidate can relocate
+or commute to any Canadian city, and hybrid roles only require part-time on-site presence.
+Only flag location as a gap if the role is fully on-site (not hybrid/remote) in a city
+that would require relocation AND the JD gives no indication relocation is acceptable.
 
 Return ONLY valid JSON (no prose, no markdown fences):
 

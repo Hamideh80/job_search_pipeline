@@ -3,8 +3,8 @@
 Pipeline flow (post Step-5):
   discovered
   → extracted          (AI extraction; French-mandatory jobs hard-filtered here)
-  → shortlisted        (score >= 70; Notion card created for human review)
-    OR skipped_low_score  (score < 70; never shown to human)
+  → shortlisted        (score >= 50; Notion card created for human review)
+    OR skipped_low_score  (score < 50; never shown to human)
   → [human approves in Notion]
   → approved           (poll_decisions advances shortlisted → approved)
   → tailored           (Master CV tailored to specific JD; only after approval)
@@ -32,7 +32,7 @@ from .discovery import ashby, gmail_linkedin, greenhouse, lever, linkedin_search
 from .progress import RunProgress
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
-SCORE_THRESHOLD = 70
+SCORE_THRESHOLD = 50
 
 # Cap how many jobs each AI stage processes per run to avoid rate-limit bursts.
 # Override with MAX_JOBS_PER_RUN=50 in .env (set to 0 for unlimited).

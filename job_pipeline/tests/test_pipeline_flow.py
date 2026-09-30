@@ -3,8 +3,8 @@
 Verifies:
 1.  French mandatory-language hard filter rejects the right patterns.
 2.  French "preferred / asset / nice-to-have" phrasing is NOT rejected.
-3.  Score < 70 → skipped_low_score.
-4.  Score >= 70 → shortlisted (not scored, not tailored).
+3.  Score < 50 → skipped_low_score.
+4.  Score >= 50 → shortlisted (not scored, not tailored).
 5.  Shortlisted job is NOT tailored (tailoring only runs on approved jobs).
 6.  poll_decisions advances shortlisted → approved when Notion returns Approved.
 7.  poll_decisions advances shortlisted → skipped_human when Notion returns Skip.
@@ -163,7 +163,7 @@ def test_extraction_allows_french_preferred(tmp_path):
     assert len(fake.calls) == 1
 
 
-# ── 4. Scoring: score < 70 → skipped_low_score ───────────────────────────────
+# ── 4. Scoring: score < 50 → skipped_low_score ───────────────────────────────
 
 def test_scoring_low_score_skips(tmp_path):
     conn = _fresh_conn()
@@ -174,7 +174,7 @@ def test_scoring_low_score_skips(tmp_path):
     )
     conn.commit()
 
-    low_score_response = _fake_scoring(best_score=55)
+    low_score_response = _fake_scoring(best_score=40)
     fake = ai.FakeAIBackend({"scoring": low_score_response})
     ai.set_ai_client(fake)
     try:
@@ -187,7 +187,7 @@ def test_scoring_low_score_skips(tmp_path):
     assert row["pipeline_status"] == "skipped_low_score"
 
 
-# ── 5. Scoring: score >= 70 → shortlisted (NOT scored, NOT tailored) ──────────
+# ── 5. Scoring: score >= 50 → shortlisted (NOT scored, NOT tailored) ──────────
 
 def test_scoring_high_score_shortlists(tmp_path):
     conn = _fresh_conn()
@@ -416,8 +416,8 @@ def test_auto_submit_false_env(monkeypatch):
 # ── 13. Scoring threshold value is correct ───────────────────────────────────
 
 def test_score_threshold():
-    assert SCORE_THRESHOLD == 70, \
-        f"SCORE_THRESHOLD should be 70, got {SCORE_THRESHOLD}"
+    assert SCORE_THRESHOLD == 50, \
+        f"SCORE_THRESHOLD should be 50, got {SCORE_THRESHOLD}"
 
 
 # ── 14. Orchestrator CV file matches scoring/tailoring ───────────────────────
