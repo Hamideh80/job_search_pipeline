@@ -245,7 +245,12 @@ class ClaudeCodeBackend(AIClient):
             data = _json.loads(raw)
             output = data.get("result", "").strip()
             usage = data.get("usage", {})
-            in_tok = usage.get("input_tokens")
+            # input_tokens only counts uncached tokens; add cache fields for
+            # the true cost picture (system/template prompts are usually cached).
+            new_in    = usage.get("input_tokens") or 0
+            cache_new = usage.get("cache_creation_input_tokens") or 0
+            cache_hit = usage.get("cache_read_input_tokens") or 0
+            in_tok  = new_in + cache_new + cache_hit or None
             out_tok = usage.get("output_tokens")
         except (_json.JSONDecodeError, AttributeError):
             output = raw
