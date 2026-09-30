@@ -12,6 +12,10 @@ from .ai import get_ai_client
 
 COMBINED_CV_FILE = "Hamideh_Ahooei_Master_CV_Combined.md"
 
+# Concise candidate summary used for scoring (much shorter than the full CV,
+# so every scoring call uses far fewer input tokens).
+_SUMMARY_PATH = Path(__file__).resolve().parent.parent / "config" / "candidate_summary.md"
+
 SCORING_PROMPT = """You are evaluating a job description against a candidate's CV to determine fit.
 
 CANDIDATE CV:
@@ -74,11 +78,17 @@ def score(jd_extracted: dict, candidate_profile: str, calibration_notes: str = "
 
 
 def load_candidate_profile(master_cv_dir: Path) -> str:
-    """Read the single combined Master CV as the candidate profile."""
+    """Return the candidate profile used for scoring.
+
+    Uses config/candidate_summary.md (concise, token-efficient) when present.
+    Falls back to the full combined CV from master_cv_dir if the summary is missing.
+    """
+    if _SUMMARY_PATH.exists():
+        return _SUMMARY_PATH.read_text(encoding="utf-8")
     path = master_cv_dir / COMBINED_CV_FILE
     if path.exists():
-        return path.read_text()
-    return f"[missing: {path}]"
+        return path.read_text(encoding="utf-8")
+    return f"[candidate profile missing: tried {_SUMMARY_PATH} and {path}]"
 
 
 def load_calibration_notes(notes_path: Path) -> str:
