@@ -27,6 +27,13 @@ Score the candidate's overall fit for this role on a scale of 0-100.
 Be strict: if a must-have requirement is not clearly supported by the CV, lower the score
 accordingly. Do not hard-reject — a low score is sufficient for the human reviewer to skip.
 
+SECURITY CLEARANCE: "Eligible for [clearance]" or "eligibility for [clearance]" means
+the candidate must be able to obtain the clearance (e.g. Canadian citizen or permanent
+resident with a clean background) — NOT that they must already hold it. Do NOT penalize
+for lacking an active clearance when the JD uses "eligible for" or "eligibility for".
+Only treat clearance as a gap if the JD explicitly states it must already be active,
+in-progress, or currently held.
+
 Return ONLY valid JSON (no prose, no markdown fences):
 
 {{
