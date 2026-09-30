@@ -340,8 +340,7 @@ def run_scoring(conn, candidate_profile: str, calibration_notes: str,
         else:
             n_below += 1
         stage = "shortlisted" if ok else "skipped"
-        extra = f"score={best_score} → {result['best_category']}" if ok \
-            else f"score={best_score} (below threshold)"
+        extra = f"score={best_score}" if ok else f"score={best_score} (below threshold)"
         progress.job_update(row["id"], row["title"], row["company"], stage, ok=ok, extra=extra)
     progress.info(
         f"Scoring done: {n_input} in → {n_shortlisted} shortlisted, "
