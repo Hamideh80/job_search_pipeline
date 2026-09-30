@@ -1,17 +1,12 @@
-"""Resume tailoring: edit a Master CV .docx in place and export a PDF.
+"""Resume tailoring: edit the combined Master CV .docx in place and export a PDF.
 
-Tailoring only runs AFTER the human approves the job in Notion. The correct
-Master CV is selected by the cv_category assigned during scoring:
+Tailoring only runs AFTER the human approves the job in Notion.
+The single base file is:
 
-  FDE / Solutions      -> Master CVs/Hamideh_Ahooei_Master_FDE_Solutions.docx
-  Agentic AI           -> Master CVs/Hamideh_Ahooei_Master_Agentic_AI.docx
-  Technical Leadership -> Master CVs/Hamideh_Ahooei_Master_Technical_Leadership.docx
+  Master CVs/Hamideh_Ahooei_Master_CV_Combined.docx
 
-The Master DOCX files live inside CV_FOLDER_PATH/Master CVs/.
-
-Tailoring opens the matching base file, reworks summary/skills/bullet
-paragraphs for the specific JD, and leaves every heading, date line, and
-contact line untouched.
+Tailoring opens that file, reworks summary/skills/bullet paragraphs for the
+specific JD, and leaves every heading, date line, and contact line untouched.
 
 Honesty rules are enforced in the prompt: only reword what's already true,
 never invent a technology/employer/title/metric that isn't in the Master CV,
@@ -25,11 +20,7 @@ from pathlib import Path
 
 from .ai import get_ai_client
 
-CATEGORY_CV_FILES = {
-    "FDE / Solutions":      "Master CVs/Hamideh_Ahooei_Master_FDE_Solutions.docx",
-    "Agentic AI":           "Master CVs/Hamideh_Ahooei_Master_Agentic_AI.docx",
-    "Technical Leadership": "Master CVs/Hamideh_Ahooei_Master_Technical_Leadership.docx",
-}
+COMBINED_CV_FILE = "Master CVs/Hamideh_Ahooei_Master_CV_Combined.docx"
 
 _DATE_LINE_RE = re.compile(r"\b(19|20)\d{2}\b.*(Present|\b(19|20)\d{2}\b)")
 
@@ -170,16 +161,13 @@ def convert_to_pdf(docx_path: Path, out_dir: Path) -> Path | None:
     return pdf_path if pdf_path.exists() else None
 
 
-def build_tailored_resume(*, cv_folder: Path, category: str, company: str, role: str,
+def build_tailored_resume(*, cv_folder: Path, company: str, role: str,
                            jd_extracted: dict, jd_raw: str, output_dir: Path) -> dict:
     """Returns {"docx_path", "pdf_path", "notes", "flags"}. docx_path/pdf_path
     are written under output_dir, named Hamideh_Ahooei_<Company>_<Role>.*"""
     import docx
 
-    base_filename = CATEGORY_CV_FILES.get(category)
-    if not base_filename:
-        raise ValueError(f"No base CV mapped for category {category!r}")
-    base_path = cv_folder / base_filename
+    base_path = cv_folder / COMBINED_CV_FILE
     if not base_path.exists():
         raise FileNotFoundError(f"Base CV not found: {base_path}")
 

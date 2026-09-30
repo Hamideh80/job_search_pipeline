@@ -11,8 +11,7 @@ Verifies:
 8.  Approved job IS picked up by run_tailoring.
 9.  Apply gate: only tailored+approved jobs are selected (not shortlisted, not synced).
 10. AUTO_SUBMIT_CONFIRMED=false → no real submission (dry-run path).
-11. Three canonical category names used everywhere (FDE / Solutions, Agentic AI,
-    Technical Leadership).
+11. Single combined CV file used in scoring and tailoring.
 12. Unapproved job can never be tailored via orchestrator.
 """
 import json
@@ -55,15 +54,9 @@ def _fake_extraction():
     })
 
 
-def _fake_scoring(best_category="FDE / Solutions", best_score=85):
+def _fake_scoring(best_score=85):
     return json.dumps({
-        "scores": {
-            "FDE / Solutions": best_score if best_category == "FDE / Solutions" else 40,
-            "Agentic AI": best_score if best_category == "Agentic AI" else 35,
-            "Technical Leadership": best_score if best_category == "Technical Leadership" else 30,
-        },
-        "best_category": best_category,
-        "best_score": best_score,
+        "score": best_score,
         "strong_matches": ["Good match"],
         "transferable_matches": [],
         "gaps": [],
@@ -181,7 +174,7 @@ def test_scoring_low_score_skips(tmp_path):
     )
     conn.commit()
 
-    low_score_response = _fake_scoring(best_category="FDE / Solutions", best_score=55)
+    low_score_response = _fake_scoring(best_score=55)
     fake = ai.FakeAIBackend({"scoring": low_score_response})
     ai.set_ai_client(fake)
     try:
@@ -217,7 +210,7 @@ def test_scoring_high_score_shortlists(tmp_path):
                        (job_id,)).fetchone()
     assert row["pipeline_status"] == "shortlisted", \
         f"Expected shortlisted, got {row['pipeline_status']}"
-    assert row["cv_category"] == "FDE / Solutions"
+    assert row["cv_category"] is None, "cv_category should not be written (single combined CV)"
 
 
 # ── 6. Shortlisted job is NOT tailored by run_tailoring ──────────────────────
@@ -314,7 +307,7 @@ def test_approved_job_is_tailored(tmp_path):
     job_id = _insert(conn)
     conn.execute(
         "UPDATE jobs SET pipeline_status='approved', decision='approved', "
-        "cv_category='FDE / Solutions', jd_extracted=? WHERE id=?",
+        "jd_extracted=? WHERE id=?",
         (_fake_extraction(), job_id),
     )
     conn.commit()
@@ -322,7 +315,7 @@ def test_approved_job_is_tailored(tmp_path):
     # Create a minimal fake DOCX so build_tailored_resume finds the base file.
     master_cvs_dir = Path(tmp_path) / "Master CVs"
     master_cvs_dir.mkdir()
-    fake_docx = master_cvs_dir / "Hamideh_Ahooei_Master_FDE_Solutions.docx"
+    fake_docx = master_cvs_dir / "Hamideh_Ahooei_Master_CV_Combined.docx"
     fake_docx.write_bytes(b"")  # empty placeholder
 
     output_dir = Path(tmp_path) / "output"
@@ -382,28 +375,31 @@ def test_apply_gate(status, decision, expected_count):
         f"status={status!r} decision={decision!r}: expected {expected_count} row(s), got {len(rows)}"
 
 
-# ── 11. Category names are canonical ─────────────────────────────────────────
+# ── 11. Single combined CV file is consistent across modules ─────────────────
 
-def test_canonical_category_names():
-    """The three canonical category names must match exactly what scoring.py
-    defines — any mismatch would cause tailoring to fail to find the DOCX."""
-    from pipeline.scoring import CV_CATEGORIES
-    from pipeline.tailoring import CATEGORY_CV_FILES
+def test_combined_cv_filename_consistent():
+    """scoring.COMBINED_CV_FILE and tailoring.COMBINED_CV_FILE must reference
+    the same base filename so that both the MD profile and the DOCX are the
+    same source document."""
+    from pipeline.scoring import COMBINED_CV_FILE as scoring_md
+    from pipeline.tailoring import COMBINED_CV_FILE as tailoring_docx
 
-    assert set(CV_CATEGORIES) == {"FDE / Solutions", "Agentic AI", "Technical Leadership"}
-    assert set(CATEGORY_CV_FILES.keys()) == {"FDE / Solutions", "Agentic AI", "Technical Leadership"}
-    assert set(CV_CATEGORIES) == set(CATEGORY_CV_FILES.keys()), \
-        "CV_CATEGORIES and CATEGORY_CV_FILES keys are out of sync"
+    # The stem (without extension) must match.
+    scoring_stem = scoring_md.removesuffix(".md")
+    tailoring_stem = tailoring_docx.split("/")[-1].removesuffix(".docx")
+    assert scoring_stem == tailoring_stem, (
+        f"CV stems don't match: scoring uses {scoring_stem!r}, "
+        f"tailoring uses {tailoring_stem!r}"
+    )
 
 
-def test_scoring_prompt_uses_canonical_categories():
-    """The SCORING_PROMPT must contain all three canonical category names so the
-    AI knows to use them as JSON keys."""
-    from pipeline.scoring import SCORING_PROMPT, CV_CATEGORIES
+def test_scoring_prompt_uses_score_key():
+    """The SCORING_PROMPT must ask the AI to return a 'score' key (not 'best_score'
+    or a per-category scores dict) — any mismatch would break scoring.score()."""
+    from pipeline.scoring import SCORING_PROMPT
 
-    for cat in CV_CATEGORIES:
-        assert cat in SCORING_PROMPT, \
-            f"Category {cat!r} not found in SCORING_PROMPT — AI will use wrong key names"
+    assert '"score"' in SCORING_PROMPT, \
+        "SCORING_PROMPT must contain '\"score\"' so the AI uses the right JSON key"
 
 
 # ── 12. AUTO_SUBMIT_CONFIRMED=false safety ────────────────────────────────────
@@ -424,14 +420,13 @@ def test_score_threshold():
         f"SCORE_THRESHOLD should be 70, got {SCORE_THRESHOLD}"
 
 
-# ── 14. Master CV files mapping is consistent ────────────────────────────────
+# ── 14. Orchestrator CV file matches scoring/tailoring ───────────────────────
 
-def test_master_cv_files_in_scoring_match_tailoring():
-    from pipeline.scoring import MASTER_CV_FILES, CV_CATEGORIES
-    from pipeline.tailoring import CATEGORY_CV_FILES
-    from pipeline.orchestrator import _MASTER_CV_FILES as ORCH_CV_FILES
+def test_orchestrator_cv_file_matches_scoring():
+    from pipeline.scoring import COMBINED_CV_FILE as scoring_md
+    from pipeline.orchestrator import _COMBINED_CV_FILE as orch_md
 
-    scoring_families = {family for _, family in MASTER_CV_FILES}
-    assert scoring_families == set(CV_CATEGORIES)
-    assert set(ORCH_CV_FILES.keys()) == set(CV_CATEGORIES)
-    assert set(CATEGORY_CV_FILES.keys()) == set(CV_CATEGORIES)
+    assert scoring_md == orch_md, (
+        f"orchestrator._COMBINED_CV_FILE ({orch_md!r}) must match "
+        f"scoring.COMBINED_CV_FILE ({scoring_md!r})"
+    )

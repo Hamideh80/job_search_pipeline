@@ -66,21 +66,14 @@ def _is_french_mandatory(jd_raw: str) -> bool:
 
 # ── CV text loading (for answers + apply custom questions) ────────────────────
 
-_MASTER_CV_FILES = {
-    "FDE / Solutions":      "Hamideh_Ahooei_Master_FDE_Solutions.md",
-    "Agentic AI":           "Hamideh_Ahooei_Master_Agentic_AI.md",
-    "Technical Leadership": "Hamideh_Ahooei_Master_Technical_Leadership.md",
-}
+_COMBINED_CV_FILE = "Hamideh_Ahooei_Master_CV_Combined.md"
 
 
-def _load_category_cv_text(category: str) -> str:
-    filename = _MASTER_CV_FILES.get(category)
-    if not filename:
-        return ""
+def _load_cv_text() -> str:
     cv_folder = os.environ.get("CV_FOLDER_PATH", "")
     if not cv_folder:
         return ""
-    path = Path(cv_folder) / "Master CVs" / filename
+    path = Path(cv_folder) / "Master CVs" / _COMBINED_CV_FILE
     return path.read_text() if path.exists() else ""
 
 
@@ -338,7 +331,6 @@ def run_scoring(conn, candidate_profile: str, calibration_notes: str,
         db.update_job(
             conn, row["id"],
             fit_score=best_score,
-            cv_category=result["best_category"],
             score_reason=result["reasoning"],
             pipeline_status=new_status,
         )
@@ -382,7 +374,6 @@ def run_tailoring(conn, cv_folder: Path, output_dir: Path, progress: RunProgress
         try:
             tailor_result = tailoring.build_tailored_resume(
                 cv_folder=cv_folder,
-                category=row["cv_category"],
                 company=row["company"],
                 role=row["title"],
                 jd_extracted=jd_extracted,
@@ -396,7 +387,7 @@ def run_tailoring(conn, cv_folder: Path, output_dir: Path, progress: RunProgress
             n_failed += 1
             continue
 
-        cv_text = _load_category_cv_text(row["cv_category"])
+        cv_text = _load_cv_text()
         try:
             answers_result = answers.draft_answers(cv_text, jd_extracted) if cv_text else {}
         except Exception as exc:  # noqa: BLE001
@@ -517,7 +508,7 @@ def run_apply(conn, screenshot_dir: Path, progress: RunProgress,
     progress.info(f"Apply: {n_input} tailored+approved job(s) queued")
     for row in rows:
         jd_extracted = json.loads(row["jd_extracted"]) if row["jd_extracted"] else {}
-        cv_text = _load_category_cv_text(row["cv_category"])
+        cv_text = _load_cv_text()
         try:
             result = apply_module.apply_to_job(
                 source=row["source"],
