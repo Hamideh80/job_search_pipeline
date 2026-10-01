@@ -1,0 +1,7 @@
+{
+  "name": "job-pipeline",
+  "displayName": "Job Search Pipeline",
+  "version": "1.0.0",
+  "description": "Automated job search: discover → extract → score → tailor → sync → apply",
+  "skills": ["./skills/"]
+}

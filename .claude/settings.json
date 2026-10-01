@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "job-pipeline": true
+  }
+}

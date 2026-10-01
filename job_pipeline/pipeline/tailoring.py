@@ -13,56 +13,13 @@ never invent a technology/employer/title/metric that isn't in the Master CV,
 keep OMID framed as part-time volunteer leadership, and don't reframe a
 prototype or self-directed initiative as production ML research.
 """
-import json
 import re
 import subprocess
 from pathlib import Path
 
-from .ai import get_ai_client
-
 COMBINED_CV_FILE = "Master CVs/Hamideh_Ahooei_Master_CV_Combined.docx"
 
 _DATE_LINE_RE = re.compile(r"\b(19|20)\d{2}\b.*(Present|\b(19|20)\d{2}\b)")
-
-TAILOR_PROMPT = """You are tailoring a resume for a specific job. You may ONLY reword or
-re-prioritize content that already appears somewhere in the FULL CV text below --
-never introduce a skill, technology, employer, title, certification, or metric
-that isn't already there. If the job wants something genuinely missing from the
-CV, do not paper over the gap -- list it in "flags" instead and leave the
-resume as-is on that point.
-
-Rules:
-- OMID Foundation experience must always read as part-time volunteer work --
-  never remove or soften "Part-time Volunteer" / "volunteer" language.
-- Never reframe the Bell "Applied AI" initiative or any personal/self-directed
-  project as production machine-learning research, or claim it was an
-  official production deployment if the source text describes it as
-  self-directed/internal.
-- Prefer re-ordering and re-emphasizing existing bullet content over rewriting
-  it wholesale; keep the same rough length per line.
-- Return ONLY valid JSON (no prose, no markdown fences):
-
-{{
-  "edits": {{"<paragraph index>": "<new text for that paragraph>", ...}},
-  "notes": "<1-3 sentences: what you emphasized and why, for the human's own reference>",
-  "flags": ["<a requirement the JD wants that genuinely isn't in the CV, if any>"]
-}}
-
-Only include paragraph indices you're actually changing -- an empty edits
-object is a valid answer if the base CV is already a strong fit as-is.
-
-FULL CURRENT CV TEXT:
-{full_text}
-
-EDITABLE PARAGRAPHS (index: current text):
-{editable_paragraphs}
-
-JOB REQUIREMENTS (structured):
-{jd_extracted}
-
-JOB DESCRIPTION (raw, for context/tone):
-{jd_raw}
-"""
 
 
 def is_editable(paragraph) -> bool:
@@ -118,18 +75,6 @@ def extract_editable_paragraphs(doc) -> list[dict]:
     ]
 
 
-def propose_edits(doc, jd_extracted: dict, jd_raw: str) -> dict:
-    prompt = TAILOR_PROMPT.format(
-        full_text=extract_full_text(doc),
-        editable_paragraphs=json.dumps(extract_editable_paragraphs(doc), indent=2),
-        jd_extracted=json.dumps(jd_extracted, indent=2),
-        jd_raw=jd_raw[:6000],
-    )
-    raw = get_ai_client().complete(prompt, max_tokens=2048, purpose="tailoring")
-    raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    return json.loads(raw)
-
-
 def apply_edits(doc, edits: dict) -> None:
     for idx_str, new_text in edits.items():
         idx = int(idx_str)
@@ -162,9 +107,15 @@ def convert_to_pdf(docx_path: Path, out_dir: Path) -> Path | None:
 
 
 def build_tailored_resume(*, cv_folder: Path, company: str, role: str,
-                           jd_extracted: dict, jd_raw: str, output_dir: Path) -> dict:
-    """Returns {"docx_path", "pdf_path", "notes", "flags"}. docx_path/pdf_path
-    are written under output_dir, named Hamideh_Ahooei_<Company>_<Role>.*"""
+                           output_dir: Path,
+                           edits: dict | None = None,
+                           notes: str = "",
+                           flags: list | None = None) -> dict:
+    """Apply pre-computed edits (from the tailor skill) to the base CV and save.
+
+    Returns {"docx_path", "pdf_path", "notes", "flags"}.
+    Called by tailor/commit.py after the skill has produced the edits JSON.
+    """
     import docx
 
     base_path = cv_folder / COMBINED_CV_FILE
@@ -172,8 +123,8 @@ def build_tailored_resume(*, cv_folder: Path, company: str, role: str,
         raise FileNotFoundError(f"Base CV not found: {base_path}")
 
     doc = docx.Document(str(base_path))
-    result = propose_edits(doc, jd_extracted, jd_raw)
-    apply_edits(doc, result.get("edits", {}))
+    if edits:
+        apply_edits(doc, edits)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"Hamideh_Ahooei_{sanitize(company)}_{sanitize(role)}"
@@ -185,6 +136,6 @@ def build_tailored_resume(*, cv_folder: Path, company: str, role: str,
     return {
         "docx_path": str(docx_path),
         "pdf_path": str(pdf_path) if pdf_path else None,
-        "notes": result.get("notes", ""),
-        "flags": result.get("flags", []),
+        "notes": notes,
+        "flags": flags or [],
     }

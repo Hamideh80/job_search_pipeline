@@ -33,8 +33,6 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .ai import get_ai_client
-
 AUTO_SUBMIT_CONFIRMED = os.environ.get("AUTO_SUBMIT_CONFIRMED", "false").strip().lower() == "true"
 APPLY_HEADLESS = os.environ.get("APPLY_HEADLESS", "true").strip().lower() != "false"
 
@@ -53,44 +51,93 @@ def load_applicant_notes(notes_path: Path) -> str:
     Returns "" if the file hasn't been created yet."""
     return notes_path.read_text() if notes_path.exists() else ""
 
-CUSTOM_ANSWER_PROMPT = """Answer these application questions as the candidate, using ONLY facts
-from the CV text below -- never invent a technology, employer, title, or
-metric that isn't there. For a yes/no eligibility question (work
-authorization, willingness to relocate, sponsorship needs), answer only if
-the CV or the notes below clearly settle it; otherwise return null so the
-human fills it in themselves. Keep OMID Foundation framed as part-time
-volunteer work if it comes up.
+def _scrape_greenhouse_questions(job_link: str) -> list[str]:
+    from playwright.sync_api import sync_playwright
+    questions = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=APPLY_HEADLESS)
+        page = browser.new_page()
+        try:
+            page.goto(job_link, timeout=30000, wait_until="domcontentloaded")
+            apply_btn = page.locator("button:has-text('Apply')").first
+            if apply_btn.count():
+                apply_btn.click()
+                page.wait_for_timeout(1000)
+            for el in page.locator("[id^='question_']").all():
+                label_el = el.locator(
+                    "xpath=ancestor::*[contains(@class,'field')][1]//label"
+                )
+                label = label_el.first.inner_text().strip() if label_el.count() else el.get_attribute("id")
+                if label:
+                    questions.append(label)
+        finally:
+            browser.close()
+    return questions
 
-Return ONLY valid JSON (no prose, no markdown fences):
-{{"answers": {{"<question text>": "<answer, or null if you're not confident>", ...}}}}
 
-CANDIDATE CV:
-{cv_text}
+def _scrape_lever_questions(job_link: str) -> list[str]:
+    from playwright.sync_api import sync_playwright
+    questions = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=APPLY_HEADLESS)
+        page = browser.new_page()
+        try:
+            page.goto(job_link.rstrip("/") + "/apply", timeout=30000, wait_until="domcontentloaded")
+            for el in page.locator(
+                "form textarea, form input[type=text]:not([name=name]):not([name=email]):not([name=phone])"
+            ).all():
+                label = el.evaluate(
+                    "e => e.closest('.application-question')?.querySelector('.application-label')?.innerText "
+                    "|| e.getAttribute('placeholder') || e.getAttribute('name') || ''"
+                ).strip()
+                if label:
+                    questions.append(label)
+        finally:
+            browser.close()
+    return questions
 
-APPLICANT NOTES (work authorization etc., may be empty):
-{applicant_notes}
 
-JOB REQUIREMENTS (structured):
-{jd_extracted}
+def _scrape_ashby_questions(job_link: str) -> list[str]:
+    from playwright.sync_api import sync_playwright
+    questions = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=APPLY_HEADLESS)
+        page = browser.new_page()
+        try:
+            page.goto(job_link, timeout=30000, wait_until="networkidle")
+            apply_btn = page.locator("button:has-text('Apply')").first
+            if apply_btn.count():
+                apply_btn.click()
+                page.wait_for_timeout(1000)
+            for el in page.locator("textarea, select").all():
+                label = el.evaluate(
+                    "e => e.closest('label')?.innerText || e.getAttribute('aria-label') "
+                    "|| e.getAttribute('placeholder') || ''"
+                ).strip()
+                if label:
+                    questions.append(label)
+        finally:
+            browser.close()
+    return questions
 
-QUESTIONS (exact text from the form):
-{questions}
-"""
+
+_SCRAPERS = {
+    "Greenhouse": _scrape_greenhouse_questions,
+    "Lever":      _scrape_lever_questions,
+    "Ashby":      _scrape_ashby_questions,
+}
 
 
-def draft_custom_answers(questions: list[str], cv_text: str, jd_extracted: dict,
-                          applicant_notes: str = "") -> dict:
-    if not questions:
-        return {}
-    prompt = CUSTOM_ANSWER_PROMPT.format(
-        cv_text=cv_text,
-        applicant_notes=applicant_notes or "(none provided)",
-        jd_extracted=json.dumps(jd_extracted, indent=2),
-        questions="\n".join(f"- {q}" for q in questions),
-    )
-    raw = get_ai_client().complete(prompt, max_tokens=1536, purpose="apply_custom_answers")
-    raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    return json.loads(raw).get("answers", {})
+def scrape_form_questions(source: str, job_link: str) -> list[str]:
+    """Open the application form, read question labels, close browser. No filling."""
+    scraper = _SCRAPERS.get(source)
+    if not scraper or not job_link:
+        return []
+    try:
+        return scraper(job_link)
+    except Exception as exc:
+        print(f"[apply] scrape_form_questions({source}) failed: {exc}")
+        return []
 
 
 def _screenshot_path(output_dir: Path, company: str, role: str) -> Path:
@@ -103,7 +150,8 @@ def _screenshot_path(output_dir: Path, company: str, role: str) -> Path:
 
 def apply_greenhouse(*, job_link: str, resume_pdf_path: str, cv_text: str,
                       jd_extracted: dict, output_dir: Path,
-                      applicant_notes: str = "") -> dict:
+                      applicant_notes: str = "",
+                      pre_answered: dict | None = None) -> dict:
     """Live-verified structure (checked against a real Anthropic Greenhouse
     posting): #first_name, #last_name, #email, #phone, #resume (file input),
     and custom questions as inputs/selects/textareas whose id starts with
@@ -143,7 +191,7 @@ def apply_greenhouse(*, job_link: str, resume_pdf_path: str, cv_text: str,
             questions.append(label)
             question_locators.append((label, el))
 
-        answers = draft_custom_answers(questions, cv_text, jd_extracted, applicant_notes)
+        answers = pre_answered or {}
         result["custom_answers"] = answers
 
         for label, el in question_locators:
@@ -205,7 +253,8 @@ def apply_greenhouse(*, job_link: str, resume_pdf_path: str, cv_text: str,
 
 
 def apply_lever(*, job_link: str, resume_pdf_path: str, cv_text: str,
-                 jd_extracted: dict, output_dir: Path, applicant_notes: str = "") -> dict:
+                 jd_extracted: dict, output_dir: Path, applicant_notes: str = "",
+                 pre_answered: dict | None = None) -> dict:
     """Best-effort, NOT live-verified this session (no open Lever posting was
     available to check against -- see README). Based on Lever's documented
     hosted-form field names: name="name", name="email", name="phone",
@@ -244,7 +293,7 @@ def apply_lever(*, job_link: str, resume_pdf_path: str, cv_text: str,
             questions.append(label)
             question_locators.append((label, el))
 
-        answers = draft_custom_answers(questions, cv_text, jd_extracted, applicant_notes)
+        answers = pre_answered or {}
         result["custom_answers"] = answers
         for label, el in question_locators:
             answer = answers.get(label)
@@ -276,7 +325,8 @@ def apply_lever(*, job_link: str, resume_pdf_path: str, cv_text: str,
 
 
 def apply_ashby(*, job_link: str, resume_pdf_path: str, cv_text: str,
-                 jd_extracted: dict, output_dir: Path, applicant_notes: str = "") -> dict:
+                 jd_extracted: dict, output_dir: Path, applicant_notes: str = "",
+                 pre_answered: dict | None = None) -> dict:
     """Best-effort, NOT live-verified this session -- see README. Ashby's
     hosted application forms are a client-rendered React app with less
     predictable field naming than Greenhouse/Lever, so this fills by
@@ -325,7 +375,7 @@ def apply_ashby(*, job_link: str, resume_pdf_path: str, cv_text: str,
             questions.append(label)
             question_locators.append((label, el))
 
-        answers = draft_custom_answers(questions, cv_text, jd_extracted, applicant_notes)
+        answers = pre_answered or {}
         result["custom_answers"] = answers
         for label, el in question_locators:
             answer = answers.get(label)
@@ -369,7 +419,8 @@ _HANDLERS = {
 
 def apply_to_job(*, source: str, job_link: str, resume_pdf_path: str, cv_text: str,
                   jd_extracted: dict, output_dir: Path, company: str, role: str,
-                  applicant_notes: str = "") -> dict:
+                  applicant_notes: str = "",
+                  pre_answered: dict | None = None) -> dict:
     handler = _HANDLERS.get(source)
     if not handler:
         raise ValueError(f"No apply handler for source {source!r} "
@@ -378,4 +429,5 @@ def apply_to_job(*, source: str, job_link: str, resume_pdf_path: str, cv_text: s
     return handler(
         job_link=job_link, resume_pdf_path=resume_pdf_path, cv_text=cv_text,
         jd_extracted=jd_extracted, output_dir=output_dir, applicant_notes=applicant_notes,
+        pre_answered=pre_answered,
     )
